@@ -20,7 +20,7 @@ export default async function HomePage() {
     supabase
       .from("categories")
       .select("*")
-      .or(`user_id.eq.${user.id},user_id.is.null`)
+      .eq("user_id", user.id)
       .order("name"),
     supabase
       .from("expenses")

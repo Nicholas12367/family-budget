@@ -26,7 +26,7 @@ async function SignupForm({
     const email = String(formData.get("email") ?? "");
     const password = String(formData.get("password") ?? "");
 
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: `${origin}/auth/callback` },
@@ -35,6 +35,12 @@ async function SignupForm({
     if (error) {
       redirect(`/signup?error=${encodeURIComponent(error.message)}`);
     }
+
+    // If a session is returned, the project has email confirmation OFF — go straight in.
+    if (data.session) {
+      redirect("/");
+    }
+
     redirect(
       `/login?message=${encodeURIComponent("Check your email for a confirmation link, then log in.")}`
     );

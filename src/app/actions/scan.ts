@@ -33,7 +33,7 @@ export async function scanReceiptAction(formData: FormData): Promise<ScanResult>
   const { data: cats } = await supabase
     .from("categories")
     .select("name")
-    .or(`user_id.eq.${user.id},user_id.is.null`);
+    .eq("user_id", user.id);
   const categoryNames = (cats ?? []).map((c) => c.name);
 
   return scanReceipt(base64, file.type || "image/jpeg", categoryNames);

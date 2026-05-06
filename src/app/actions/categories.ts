@@ -17,7 +17,7 @@ export async function listCategories() {
   const { data, error } = await supabase
     .from("categories")
     .select("*")
-    .or(`user_id.eq.${user.id},user_id.is.null`)
+    .eq("user_id", user.id)
     .order("name");
   if (error) throw error;
   return data;

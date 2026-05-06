@@ -14,7 +14,7 @@ export default async function ScanPage() {
   const { data: categories = [] } = await supabase
     .from("categories")
     .select("*")
-    .or(`user_id.eq.${user.id},user_id.is.null`)
+    .eq("user_id", user.id)
     .order("name");
 
   return <ScanClient categories={categories ?? []} />;
