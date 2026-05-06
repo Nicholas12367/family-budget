@@ -15,8 +15,6 @@ export async function listBudgets() {
 export async function setBudget(input: {
   category_id: number;
   monthly_limit: number;
-  month: number;
-  year: number;
 }) {
   const { supabase, user } = await getUserOrThrow();
   if (!input.monthly_limit || input.monthly_limit <= 0) {
@@ -24,16 +22,21 @@ export async function setBudget(input: {
       .from("budgets")
       .delete()
       .eq("user_id", user.id)
-      .eq("category_id", input.category_id)
-      .eq("month", input.month)
-      .eq("year", input.year);
+      .eq("category_id", input.category_id);
     if (error) throw error;
   } else {
+    const now = new Date();
     const { error } = await supabase
       .from("budgets")
       .upsert(
-        { ...input, user_id: user.id },
-        { onConflict: "user_id,category_id,month,year" }
+        {
+          user_id: user.id,
+          category_id: input.category_id,
+          monthly_limit: input.monthly_limit,
+          month: now.getMonth(),
+          year: now.getFullYear(),
+        },
+        { onConflict: "user_id,category_id" }
       );
     if (error) throw error;
   }

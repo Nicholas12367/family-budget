@@ -33,8 +33,6 @@ export type Budget = {
   user_id: string;
   category_id: number;
   monthly_limit: number;
-  month: number; // 0-11
-  year: number;
 };
 
 export type ReceiptBatch = {

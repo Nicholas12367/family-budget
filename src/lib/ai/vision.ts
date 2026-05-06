@@ -22,18 +22,20 @@ export type Provider = "gemini";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-const PROMPT = (categoryNames: string[]) => `You are extracting line items from a retail receipt photo.
+const PROMPT = (categoryNames: string[]) => `You are extracting line items from a retail receipt photo. Be precise — the user pays GST/PST so taxes must NOT be skipped.
 
-For each item on the receipt, return a JSON object with:
+For each item physically printed on the receipt, return a JSON object with:
 - description: the product name as printed
-- amount: the post-discount price as a positive number (use a negative number ONLY for discount/return lines)
-- category_name: pick the BEST match from this exact list: ${JSON.stringify(categoryNames)}. If unsure pick "Other".
-- notes: optional short note (e.g. weight/quantity, GST/PST). Empty string if nothing relevant.
+- amount: the FINAL amount the customer paid for that line, INCLUDING any per-item or proportional GST/PST/HST that applies. If the receipt prints subtotals + a tax block at the end, distribute the tax proportionally across the taxable items so each item's "amount" reflects what was actually charged. Use a negative number ONLY for discount/refund lines.
+- category_name: pick the BEST match from this exact list: ${JSON.stringify(categoryNames)}. If nothing fits, use "Other".
+- notes: short note. ALWAYS append the tax breakdown if any tax was charged on the line, in the format "(incl. GST $X.XX)" or "(incl. GST $X.XX + PST $Y.YY)". Use "" only if the line is truly tax-free.
 
 Also extract:
 - merchant: store name (e.g. "Costco Wholesale")
 - date: receipt date in YYYY-MM-DD; if absent, today's date
-- total: receipt grand total (positive number)
+- total: the receipt grand total — the final number the customer paid, taxes included
+
+Sanity check: the sum of line item amounts should be close to the grand total (off by at most a few cents from rounding). If they aren't, redistribute tax until they do.
 
 Output ONLY valid JSON in this exact shape:
 {

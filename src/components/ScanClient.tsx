@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { fmt } from "@/lib/money";
+import { compressImage } from "@/lib/image";
 import type { Category, ScanResult } from "@/lib/types";
 import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
+import CategoryPicker from "./CategoryPicker";
 
 type LineDraft = {
   description: string;
@@ -15,8 +17,13 @@ type LineDraft = {
   date: string;
 };
 
-export default function ScanClient({ categories }: { categories: Category[] }) {
+export default function ScanClient({
+  categories: initialCategories,
+}: {
+  categories: Category[];
+}) {
   const router = useRouter();
+  const [categories, setCategories] = useState(initialCategories);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [merchant, setMerchant] = useState("");
@@ -35,8 +42,9 @@ export default function ScanClient({ categories }: { categories: Category[] }) {
     setError(null);
     setBusy(true);
     try {
+      const compressed = await compressImage(file);
       const fd = new FormData();
-      fd.append("image", file);
+      fd.append("image", compressed);
       const res = await scanReceiptAction(fd);
       setResult(res);
       setMerchant(res.merchant ?? "");
@@ -198,25 +206,19 @@ export default function ScanClient({ categories }: { categories: Category[] }) {
                     )
                   }
                 />
-                <select
-                  className="col-span-4 border rounded-lg px-2 py-1 text-sm"
+                <CategoryPicker
+                  className="col-span-4"
                   value={l.category_id}
-                  onChange={(e) =>
+                  categories={categories}
+                  onChange={(id) =>
                     setLines((prev) =>
-                      prev.map((x, j) =>
-                        j === i
-                          ? { ...x, category_id: Number(e.target.value) }
-                          : x
-                      )
+                      prev.map((x, j) => (j === i ? { ...x, category_id: id } : x))
                     )
                   }
-                >
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.icon} {c.name}
-                    </option>
-                  ))}
-                </select>
+                  onCreated={(cat) =>
+                    setCategories((prev) => [...prev, cat])
+                  }
+                />
                 <button
                   className="col-span-1 text-red-500 text-sm"
                   onClick={() =>

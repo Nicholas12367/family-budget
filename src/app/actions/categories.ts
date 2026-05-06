@@ -26,13 +26,14 @@ export async function listCategories() {
 export async function createCategory(form: FormData) {
   const { supabase, user } = await getUserOrThrow();
   const input = CategoryInput.parse(Object.fromEntries(form));
-  const { error } = await supabase.from("categories").insert({
-    ...input,
-    user_id: user.id,
-    is_default: false,
-  });
+  const { data, error } = await supabase
+    .from("categories")
+    .insert({ ...input, user_id: user.id, is_default: false })
+    .select("*")
+    .single();
   if (error) throw error;
   revalidatePath("/");
+  return data;
 }
 
 export async function updateCategory(id: number, form: FormData) {

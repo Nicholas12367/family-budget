@@ -23,6 +23,7 @@ import {
   deleteCategory,
   updateCategory,
 } from "@/app/actions/categories";
+import CategoryPicker from "./CategoryPicker";
 
 Chart.register(ArcElement, Tooltip, Legend, DoughnutController);
 
@@ -73,9 +74,7 @@ export default function BudgetApp({
   );
 
   const totalSpent = monthExpenses.reduce((s, e) => s + Number(e.amount), 0);
-  const totalBudget = budgets
-    .filter((b) => b.month === month && b.year === year)
-    .reduce((s, b) => s + Number(b.monthly_limit), 0);
+  const totalBudget = budgets.reduce((s, b) => s + Number(b.monthly_limit), 0);
   const totalFixed = fixedCosts.reduce((s, f) => s + fixedMonthlyEquivalent(f), 0);
   const remaining = totalBudget - totalSpent;
 
@@ -158,7 +157,7 @@ export default function BudgetApp({
             monthLabel={`${MONTH_NAMES[month]} ${year}`}
             monthExpenses={monthExpenses}
             categories={categories}
-            budgets={budgets.filter((b) => b.month === month && b.year === year)}
+            budgets={budgets}
             totals={{ totalSpent, totalBudget, totalFixed, remaining }}
             catById={catById}
             onEditExpense={(e) => setEditExpense(e)}
@@ -185,23 +184,12 @@ export default function BudgetApp({
           <BudgetsTab
             categories={categories}
             budgets={budgets}
-            month={month}
-            year={year}
+            monthExpenses={monthExpenses}
             onChange={(catId, val) => {
               startTransition(async () => {
-                await setBudget({
-                  category_id: catId,
-                  monthly_limit: val,
-                  month,
-                  year,
-                });
+                await setBudget({ category_id: catId, monthly_limit: val });
                 setBudgets((prev) => {
-                  const i = prev.findIndex(
-                    (b) =>
-                      b.category_id === catId &&
-                      b.month === month &&
-                      b.year === year
-                  );
+                  const i = prev.findIndex((b) => b.category_id === catId);
                   if (!val || val <= 0) {
                     if (i >= 0) {
                       const next = [...prev];
@@ -222,8 +210,6 @@ export default function BudgetApp({
                       user_id: "",
                       category_id: catId,
                       monthly_limit: val,
-                      month,
-                      year,
                     },
                   ];
                 });
@@ -244,6 +230,7 @@ export default function BudgetApp({
         <ExpenseDialog
           initial={editExpense}
           categories={categories}
+          onCategoryCreated={(c) => setCategories((prev) => [...prev, c])}
           onClose={() => setEditExpense(null)}
           onSave={async (form, id) => {
             const data = Object.fromEntries(form);
@@ -612,6 +599,7 @@ function Dashboard({
                 e={e}
                 catById={catById}
                 onClick={() => onEditExpense(e)}
+                compact
               />
             ))}
           </div>
@@ -625,10 +613,12 @@ function ExpenseRow({
   e,
   catById,
   onClick,
+  compact = false,
 }: {
   e: Expense;
   catById: Map<number, Category>;
   onClick?: () => void;
+  compact?: boolean;
 }) {
   const c = catById.get(e.category_id) ?? {
     name: "Unknown",
@@ -644,21 +634,24 @@ function ExpenseRow({
       }`}
     >
       <span className="cat-chip" style={{ background: c.color }}>
-        {c.icon} {c.name}
+        {c.icon}
+        {compact ? "" : ` ${c.name}`}
       </span>
       <div className="flex-1 min-w-0">
         <p className="font-medium text-sm truncate">
           {e.description || "(no description)"}
         </p>
-        <p className="text-xs text-gray-500">
-          {d.toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-            timeZone: "UTC",
-          })}
-          {e.notes ? " • " + e.notes : ""}
-        </p>
+        {!compact && (
+          <p className="text-xs text-gray-500">
+            {d.toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              timeZone: "UTC",
+            })}
+            {e.notes ? " • " + e.notes : ""}
+          </p>
+        )}
       </div>
       <p className="font-semibold tabular-nums">{fmt(e.amount)}</p>
     </div>
@@ -783,46 +776,94 @@ function FixedTab({
 function BudgetsTab({
   categories,
   budgets,
-  month,
-  year,
+  monthExpenses,
   onChange,
 }: {
   categories: Category[];
   budgets: Budget[];
-  month: number;
-  year: number;
+  monthExpenses: Expense[];
   onChange: (categoryId: number, value: number) => void;
 }) {
+  const spentByCat = useMemo(() => {
+    const m = new Map<number, number>();
+    monthExpenses.forEach((e) =>
+      m.set(e.category_id, (m.get(e.category_id) ?? 0) + Number(e.amount))
+    );
+    return m;
+  }, [monthExpenses]);
+
+  const sorted = useMemo(() => {
+    return [...categories].sort((a, b) => {
+      const aHas = budgets.some((x) => x.category_id === a.id);
+      const bHas = budgets.some((x) => x.category_id === b.id);
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [categories, budgets]);
+
   return (
     <section className="space-y-4">
-      <h2 className="text-xl font-bold">Monthly Budgets</h2>
-      <p className="text-sm text-gray-600">
-        Set a monthly spending limit for each category. Leave blank to skip.
-      </p>
-      <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
-        {categories.map((c) => {
-          const b = budgets.find(
-            (x) =>
-              x.category_id === c.id && x.month === month && x.year === year
-          );
+      <div>
+        <h2 className="text-xl font-bold">Monthly Budgets</h2>
+        <p className="text-sm text-gray-600">
+          Each budget carries forward to the next month automatically. Edit any
+          time — the new limit applies immediately. Leave blank to remove.
+        </p>
+      </div>
+      <div className="bg-white rounded-xl shadow-sm divide-y">
+        {sorted.map((c) => {
+          const b = budgets.find((x) => x.category_id === c.id);
+          const limit = b ? Number(b.monthly_limit) : 0;
+          const used = spentByCat.get(c.id) ?? 0;
+          const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+          const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
+          const remaining = limit - used;
           return (
-            <div key={c.id} className="flex items-center gap-3">
-              <span className="cat-chip" style={{ background: c.color }}>
-                {c.icon} {c.name}
-              </span>
-              <div className="flex-1" />
-              <div className="flex items-center gap-1">
-                <span className="text-gray-500 text-sm">$</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  defaultValue={b ? Number(b.monthly_limit) : ""}
-                  onBlur={(e) => onChange(c.id, Number(e.target.value))}
-                  className="w-28 border rounded-lg px-2 py-1 text-right tabular-nums"
-                  placeholder="0.00"
-                />
+            <div key={c.id} className="px-4 py-3 space-y-2">
+              <div className="flex items-center gap-3">
+                <span className="cat-chip" style={{ background: c.color }}>
+                  {c.icon} {c.name}
+                </span>
+                <div className="flex-1" />
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-500 text-sm">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue={limit > 0 ? limit : ""}
+                    onBlur={(e) => onChange(c.id, Number(e.target.value))}
+                    className="w-28 border rounded-lg px-2 py-1 text-right tabular-nums"
+                    placeholder="0.00"
+                  />
+                </div>
               </div>
+              {limit > 0 && (
+                <>
+                  <div className="progress-bar">
+                    <div
+                      className={`progress-fill ${cls}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-xs text-gray-600 tabular-nums">
+                    <span>
+                      {fmt(used)} of {fmt(limit)} ({Math.round(pct)}%)
+                    </span>
+                    <span
+                      className={
+                        remaining < 0
+                          ? "text-red-600 font-semibold"
+                          : "text-gray-600"
+                      }
+                    >
+                      {remaining >= 0
+                        ? `${fmt(remaining)} left`
+                        : `${fmt(-remaining)} over`}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           );
         })}
@@ -879,12 +920,14 @@ function CategoriesTab({
 function ExpenseDialog({
   initial,
   categories,
+  onCategoryCreated,
   onClose,
   onSave,
   onDelete,
 }: {
   initial: Expense | "new";
   categories: Category[];
+  onCategoryCreated?: (c: Category) => void;
   onClose: () => void;
   onSave: (form: FormData, id?: number) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
@@ -892,6 +935,9 @@ function ExpenseDialog({
   const isNew = initial === "new";
   const e = isNew ? null : initial;
   const today = new Date().toISOString().slice(0, 10);
+  const [categoryId, setCategoryId] = useState<number>(
+    e?.category_id ?? categories[0]?.id ?? 0
+  );
 
   return (
     <DialogShell onClose={onClose}>
@@ -900,6 +946,7 @@ function ExpenseDialog({
         onSubmit={async (ev) => {
           ev.preventDefault();
           const fd = new FormData(ev.currentTarget);
+          fd.set("category_id", String(categoryId));
           await onSave(fd, e?.id);
           onClose();
         }}
@@ -916,18 +963,16 @@ function ExpenseDialog({
           />
         </Field>
         <Field label="Category">
-          <select
-            name="category_id"
-            required
-            defaultValue={e?.category_id ?? categories[0]?.id}
-            className="w-full border rounded-lg px-3 py-2 mt-1"
-          >
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.icon} {c.name}
-              </option>
-            ))}
-          </select>
+          <CategoryPicker
+            value={categoryId}
+            categories={categories}
+            onChange={setCategoryId}
+            onCreated={(c) => {
+              onCategoryCreated?.(c);
+              setCategoryId(c.id);
+            }}
+            className="mt-1"
+          />
         </Field>
         <Field label="Description">
           <input
