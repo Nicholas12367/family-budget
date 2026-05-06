@@ -19,7 +19,7 @@ const ScanSchema = z.object({
 
 export type Provider = "gemini";
 
-const GEMINI_MODEL = "gemini-2.0-flash-exp";
+const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 const PROMPT = (categoryNames: string[]) => `You are extracting line items from a retail receipt photo.
