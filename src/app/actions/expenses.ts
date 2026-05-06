@@ -2,6 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
+import { checkBudgetThreshold, sendToUser } from "@/lib/push";
 
 const ExpenseInput = z.object({
   category_id: z.coerce.number().int().positive(),
@@ -10,6 +11,10 @@ const ExpenseInput = z.object({
   notes: z.string().optional().default(""),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
+
+const LARGE_PURCHASE_THRESHOLD = 100;
+const fmt = (n: number) =>
+  "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 export async function listExpenses() {
   const { supabase, user } = await getUserOrThrow();
@@ -32,6 +37,19 @@ export async function createExpense(form: FormData) {
   });
   if (error) throw error;
   revalidatePath("/");
+
+  try {
+    if (input.amount >= LARGE_PURCHASE_THRESHOLD) {
+      await sendToUser(user.id, {
+        title: "Purchase logged",
+        body: `${fmt(input.amount)} • ${input.description || "expense"}`,
+        url: "/",
+      });
+    }
+    await checkBudgetThreshold(user.id, input.category_id, input.date);
+  } catch {
+    // push failures must not block the expense save
+  }
 }
 
 export async function updateExpense(id: number, form: FormData) {

@@ -3,7 +3,11 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
 import { scanReceipt } from "@/lib/ai/vision";
+import { checkBudgetThreshold, sendToUser } from "@/lib/push";
 import type { ScanResult } from "@/lib/types";
+
+const fmt = (n: number) =>
+  "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 const SaveInput = z.object({
   merchant: z.string().default(""),
@@ -70,5 +74,27 @@ export async function saveScannedExpenses(input: z.input<typeof SaveInput>) {
   }
 
   revalidatePath("/");
+
+  try {
+    const total = parsed.line_items.reduce((s, li) => s + li.amount, 0);
+    await sendToUser(user.id, {
+      title: parsed.merchant
+        ? `Receipt saved: ${parsed.merchant}`
+        : "Receipt saved",
+      body: `${parsed.line_items.length} item${
+        parsed.line_items.length === 1 ? "" : "s"
+      } • ${fmt(total)}`,
+      url: "/",
+    });
+    const seen = new Set<number>();
+    for (const li of parsed.line_items) {
+      if (seen.has(li.category_id)) continue;
+      seen.add(li.category_id);
+      await checkBudgetThreshold(user.id, li.category_id, li.date);
+    }
+  } catch {
+    // push failures must not block save
+  }
+
   return { ok: true, count: parsed.line_items.length };
 }

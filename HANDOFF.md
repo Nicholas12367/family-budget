@@ -205,11 +205,26 @@ All of the user's items 1–9 except the push-notification piece of #1:
 
 ---
 
-## Deferred: web push notifications
+## Web push notifications — IMPLEMENTED
 
-The user's request was: *push for budget threshold crosses (e.g. 80%, 100%)
-and for new purchases*. This needs real plumbing — the rest of the app is
-shipping without it.
+VAPID keys are in `.env.local`. The code is shipping. To activate end-to-end
+the **Supabase migration must be run** in the SQL editor — see
+`supabase/push_subscriptions.sql`. Until that table exists, attempts to
+subscribe will surface an error in the Settings → Notifications panel; the
+rest of the app keeps working unaffected.
+
+After the migration runs:
+1. Open the app, go to Settings → Notifications, click **Enable notifications**.
+2. Click **Send test** to confirm it lands.
+3. Pushes fire on (a) any expense ≥ $100 and (b) crossing budget thresholds
+   at 50% / 80% / 100% / 110% (each fires once per category per month).
+
+VAPID env vars to copy to Vercel (Production + Preview + Development):
+- `NEXT_PUBLIC_VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT`
+
+## Deferred (legacy notes — for reference)
 
 ### Why it's not done in this session
 

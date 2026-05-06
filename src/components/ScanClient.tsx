@@ -8,6 +8,7 @@ import { compressImage } from "@/lib/image";
 import type { Category, ScanResult } from "@/lib/types";
 import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
 import CategoryPicker from "./CategoryPicker";
+import { IconArrowLeft, IconCamera, IconClose } from "./Icon";
 
 type LineDraft = {
   description: string;
@@ -87,8 +88,12 @@ export default function ScanClient({
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
       <div className="flex items-center justify-between">
-        <Link href="/" className="text-emerald-700 text-sm">
-          ← Back
+        <Link
+          href="/"
+          className="text-emerald-700 text-sm inline-flex items-center gap-1"
+        >
+          <IconArrowLeft size={16} />
+          Back
         </Link>
         <h1 className="text-xl font-bold">Scan Receipt</h1>
         <span />
@@ -119,8 +124,11 @@ export default function ScanClient({
                 if (f) onPick(f);
               }}
             />
-            <span className="block w-full text-center px-4 py-6 rounded-lg bg-emerald-500 text-white font-semibold cursor-pointer hover:bg-emerald-600">
-              {busy ? "Scanning…" : "📷 Take or upload photo"}
+            <span className="block w-full px-4 py-6 rounded-lg bg-emerald-500 text-white font-semibold cursor-pointer hover:bg-emerald-600">
+              <span className="flex items-center justify-center gap-2">
+                <IconCamera size={20} strokeWidth={2} />
+                <span>{busy ? "Scanning…" : "Take or upload photo"}</span>
+              </span>
             </span>
           </label>
         </div>
@@ -143,17 +151,45 @@ export default function ScanClient({
                 <input
                   type="date"
                   value={result.date}
-                  onChange={(e) =>
-                    setResult({ ...result, date: e.target.value })
-                  }
+                  onChange={(e) => {
+                    const newDate = e.target.value;
+                    setResult({ ...result, date: newDate });
+                    setLines((prev) =>
+                      prev.map((l) => ({ ...l, date: newDate }))
+                    );
+                  }}
                   className="w-full border rounded-lg px-3 py-2 mt-1"
                 />
               </Field>
             </div>
-            <p className="text-sm text-gray-500">
-              Receipt total (extracted): {fmt(result.total)}. Line item sum:{" "}
-              {fmt(lines.reduce((s, l) => s + Number(l.amount || 0), 0))}.
-            </p>
+            {(() => {
+              const sum = lines.reduce(
+                (s, l) => s + Number(l.amount || 0),
+                0
+              );
+              const diff = sum - Number(result.total || 0);
+              const off = Math.abs(diff) > 0.05;
+              return (
+                <p
+                  className={`text-sm ${
+                    off ? "text-amber-700" : "text-gray-500"
+                  }`}
+                >
+                  Receipt total (extracted): {fmt(result.total)}. Line item
+                  sum: {fmt(sum)}.
+                  {off && (
+                    <>
+                      {" "}
+                      <strong>
+                        Off by {fmt(Math.abs(diff))}
+                      </strong>
+                      {" "}
+                      — adjust amounts so they match the printed total.
+                    </>
+                  )}
+                </p>
+              );
+            })()}
           </div>
 
           <div className="bg-white rounded-xl shadow-sm divide-y">
@@ -220,13 +256,13 @@ export default function ScanClient({
                   }
                 />
                 <button
-                  className="col-span-1 text-red-500 text-sm"
+                  className="col-span-1 text-red-500 inline-flex justify-center"
                   onClick={() =>
                     setLines((prev) => prev.filter((_, j) => j !== i))
                   }
                   aria-label="Remove row"
                 >
-                  ✕
+                  <IconClose size={16} strokeWidth={2} />
                 </button>
               </div>
             ))}

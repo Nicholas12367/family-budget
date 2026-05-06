@@ -32,8 +32,15 @@ For each item physically printed on the receipt, return a JSON object with:
 
 Also extract:
 - merchant: store name (e.g. "Costco Wholesale")
-- date: receipt date in YYYY-MM-DD; if absent, today's date
-- total: the receipt grand total — the final number the customer paid, taxes included
+- date: the PURCHASE date that is printed on the receipt, in strict YYYY-MM-DD format.
+  CRITICAL date rules:
+   - Find the date that the transaction occurred — usually printed near the top or bottom of the receipt, often labelled "Date", "Trans Date", "Date/Heure", or just appearing alongside a time stamp.
+   - Receipts often print dates in formats like "MM/DD/YYYY", "DD/MM/YYYY", "DD-MMM-YYYY", "YYYY-MM-DD", or "Mar 14 2026". Convert to YYYY-MM-DD.
+   - If the year is shown as 2 digits (e.g. "03/14/26"), assume 20YY.
+   - If both DD/MM and MM/DD are ambiguous, prefer the interpretation where the day ≤ 31 and the month ≤ 12. For Canadian receipts, prefer DD/MM/YYYY when both are valid.
+   - DO NOT use today's date as a guess. Only fall back to today's date if NO date is printed on the receipt at all.
+   - DO NOT use the loyalty/points expiry date or "valid until" date. Use the actual purchase date.
+- total: the receipt grand total — the final number the customer paid, taxes included.
 
 Sanity check: the sum of line item amounts should be close to the grand total (off by at most a few cents from rounding). If they aren't, redistribute tax until they do.
 

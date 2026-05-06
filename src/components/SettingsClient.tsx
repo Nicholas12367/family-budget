@@ -4,6 +4,13 @@ import { useState } from "react";
 import type { Budget, Category, Expense, FixedCost } from "@/lib/types";
 import { importCsvFiles } from "@/app/actions/import";
 import { exportExcel, exportPdf, type ExportSnapshot } from "@/lib/exporters";
+import {
+  IconSpreadsheet,
+  IconDocument,
+  IconBraces,
+  IconUpload,
+} from "./Icon";
+import PushSubscribe from "./PushSubscribe";
 
 type Snapshot = {
   categories: Category[];
@@ -61,6 +68,8 @@ export default function SettingsClient({
 
   return (
     <div className="space-y-4">
+      <PushSubscribe />
+
       <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
         <h2 className="font-semibold">Account</h2>
         <p className="text-sm text-gray-600">
@@ -122,8 +131,11 @@ export default function SettingsClient({
             }}
             className="px-4 py-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-semibold hover:bg-emerald-100 ring-1 ring-emerald-100 text-left"
           >
-            <div className="text-base">📊 Excel</div>
-            <div className="text-xs text-emerald-600/80 font-normal">
+            <div className="flex items-center gap-2 text-base">
+              <IconSpreadsheet size={20} />
+              <span>Excel</span>
+            </div>
+            <div className="text-xs text-emerald-600/80 font-normal mt-1">
               .xlsx with summary, expenses, fixed, budgets, categories
             </div>
           </button>
@@ -140,8 +152,11 @@ export default function SettingsClient({
             }}
             className="px-4 py-3 rounded-xl bg-rose-50 text-rose-700 text-sm font-semibold hover:bg-rose-100 ring-1 ring-rose-100 text-left"
           >
-            <div className="text-base">📄 PDF report</div>
-            <div className="text-xs text-rose-600/80 font-normal">
+            <div className="flex items-center gap-2 text-base">
+              <IconDocument size={20} />
+              <span>PDF report</span>
+            </div>
+            <div className="text-xs text-rose-600/80 font-normal mt-1">
               Print-ready summary. Save as PDF in print dialog.
             </div>
           </button>
@@ -149,8 +164,11 @@ export default function SettingsClient({
             onClick={exportJson}
             className="px-4 py-3 rounded-xl bg-gray-50 text-gray-700 text-sm font-semibold hover:bg-gray-100 ring-1 ring-gray-100 text-left"
           >
-            <div className="text-base">⇩ JSON</div>
-            <div className="text-xs text-gray-500 font-normal">
+            <div className="flex items-center gap-2 text-base">
+              <IconBraces size={20} />
+              <span>JSON</span>
+            </div>
+            <div className="text-xs text-gray-500 font-normal mt-1">
               Raw data, re-importable later
             </div>
           </button>

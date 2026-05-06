@@ -24,6 +24,19 @@ import {
   updateCategory,
 } from "@/app/actions/categories";
 import CategoryPicker from "./CategoryPicker";
+import {
+  IconHome,
+  IconClock,
+  IconCamera,
+  IconReceipt,
+  IconMore,
+  IconSettings,
+  IconTarget,
+  IconTag,
+  IconList,
+  IconChevronLeft,
+  IconChevronRight,
+} from "./Icon";
 
 Chart.register(ArcElement, Tooltip, Legend, DoughnutController);
 
@@ -64,7 +77,13 @@ export default function BudgetApp({
   const [drill, setDrill] = useState<DrillKind | null>(null);
   const [showMore, setShowMore] = useState(false);
 
-  const [isPending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
 
   const monthExpenses = useMemo(
     () =>
@@ -138,15 +157,17 @@ export default function BudgetApp({
           ))}
           <Link
             href="/scan"
-            className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-100 text-emerald-700 hover:bg-emerald-200 ml-auto"
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-100 text-emerald-700 hover:bg-emerald-200 ml-auto inline-flex items-center gap-1.5"
           >
-            📷 Scan
+            <IconCamera size={16} />
+            Scan
           </Link>
           <Link
             href="/settings"
-            className="px-4 py-2 rounded-lg text-sm font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200"
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200 inline-flex items-center"
+            aria-label="Settings"
           >
-            ⚙
+            <IconSettings size={16} />
           </Link>
         </div>
       </nav>
@@ -419,12 +440,25 @@ function Header({
     <header className="bg-white/80 backdrop-blur-md border-b border-gray-200/70 sticky top-0 z-20">
       <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white font-bold shadow-md shadow-emerald-500/30 ring-1 ring-emerald-300/40">
-            $
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white shadow-md shadow-emerald-500/30 ring-1 ring-emerald-300/40">
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3v18" />
+              <path d="M16.5 7.5h-6a2.5 2.5 0 0 0 0 5h3a2.5 2.5 0 0 1 0 5h-6.5" />
+            </svg>
           </div>
           <div>
             <h1 className="font-bold text-base leading-tight tracking-tight">
-              Family Budget
+              Budget App
             </h1>
             <p className="text-xs text-gray-500 font-medium">{monthLabel}</p>
           </div>
@@ -432,17 +466,17 @@ function Header({
         <div className="flex gap-1.5 items-center">
           <button
             onClick={onPrevMonth}
-            className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-sm flex items-center justify-center"
+            className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700"
             aria-label="Previous month"
           >
-            ◀
+            <IconChevronLeft size={16} />
           </button>
           <button
             onClick={onNextMonth}
-            className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-sm flex items-center justify-center"
+            className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700"
             aria-label="Next month"
           >
-            ▶
+            <IconChevronRight size={16} />
           </button>
           <span className="text-xs text-gray-500 hidden sm:inline ml-2">
             {email}
@@ -685,11 +719,15 @@ function Dashboard({
                 const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
                 return (
                   <div key={b.id}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>
-                        {c.icon} {c.name}
+                    <div className="flex justify-between text-sm mb-1 gap-2">
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: c.color }}
+                        />
+                        <span className="truncate">{c.name}</span>
                       </span>
-                      <span className="tabular-nums">
+                      <span className="tabular-nums shrink-0">
                         {fmt(used)} / {fmt(limit)}
                       </span>
                     </div>
@@ -735,7 +773,6 @@ function ExpenseRow({
   e,
   catById,
   onClick,
-  compact = false,
 }: {
   e: Expense;
   catById: Map<number, Category>;
@@ -744,38 +781,28 @@ function ExpenseRow({
 }) {
   const c = catById.get(e.category_id) ?? {
     name: "Unknown",
-    icon: "❓",
     color: "#9ca3af",
   };
-  const d = new Date(e.date);
   return (
     <div
       onClick={onClick}
-      className={`flex items-center gap-3 px-4 py-3 ${
+      className={`flex items-center gap-2 px-3 py-2.5 ${
         onClick ? "hover:bg-gray-50 cursor-pointer" : ""
       }`}
     >
-      <span className="cat-chip" style={{ background: c.color }}>
-        {c.icon}
-        {compact ? "" : ` ${c.name}`}
+      <span
+        className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[40%]"
+        style={{ background: c.color }}
+        title={c.name}
+      >
+        <span className="truncate">{c.name}</span>
       </span>
-      <div className="flex-1 min-w-0">
-        <p className="font-medium text-sm truncate">
-          {e.description || "(no description)"}
-        </p>
-        {!compact && (
-          <p className="text-xs text-gray-500">
-            {d.toLocaleDateString("en-US", {
-              month: "short",
-              day: "numeric",
-              year: "numeric",
-              timeZone: "UTC",
-            })}
-            {e.notes ? " • " + e.notes : ""}
-          </p>
-        )}
-      </div>
-      <p className="font-semibold tabular-nums">{fmt(e.amount)}</p>
+      <p className="flex-1 min-w-0 text-sm text-gray-700 truncate">
+        {e.description || "(no description)"}
+      </p>
+      <p className="font-semibold text-sm tabular-nums shrink-0">
+        {fmt(e.amount)}
+      </p>
     </div>
   );
 }
@@ -861,7 +888,6 @@ function FixedTab({
             {fixedCosts.map((f) => {
               const c = catById.get(f.category_id) ?? {
                 name: "Unknown",
-                icon: "❓",
                 color: "#9ca3af",
               };
               const monthly = fixedMonthlyEquivalent(f);
@@ -869,10 +895,14 @@ function FixedTab({
                 <div
                   key={f.id}
                   onClick={() => onEdit(f)}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer"
+                  className="flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer"
                 >
-                  <span className="cat-chip" style={{ background: c.color }}>
-                    {c.icon}
+                  <span
+                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[35%]"
+                    style={{ background: c.color }}
+                    title={c.name}
+                  >
+                    <span className="truncate">{c.name}</span>
                   </span>
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm truncate">
@@ -881,10 +911,13 @@ function FixedTab({
                         <span className="text-gray-400"> (paused)</span>
                       )}
                     </p>
-                    <p className="text-xs text-gray-500">
-                      {fmt(f.amount)} {f.frequency} • {fmt(monthly)}/mo
+                    <p className="text-[11px] text-gray-500 truncate">
+                      {fmt(f.amount)} {f.frequency}
                     </p>
                   </div>
+                  <p className="font-semibold text-sm tabular-nums shrink-0">
+                    {fmt(monthly)}/mo
+                  </p>
                 </div>
               );
             })}
@@ -943,8 +976,12 @@ function BudgetsTab({
           return (
             <div key={c.id} className="px-4 py-3 space-y-2">
               <div className="flex items-center gap-3">
-                <span className="cat-chip" style={{ background: c.color }}>
-                  {c.icon} {c.name}
+                <span
+                  className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[55%]"
+                  style={{ background: c.color }}
+                  title={c.name}
+                >
+                  <span className="truncate">{c.name}</span>
                 </span>
                 <div className="flex-1" />
                 <div className="flex items-center gap-1">
@@ -1022,12 +1059,11 @@ function CategoriesTab({
             className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer"
           >
             <span
-              className="w-3 h-3 rounded-full inline-block"
+              className="w-3 h-3 rounded-full inline-block shrink-0"
               style={{ background: c.color }}
             />
-            <span className="text-xl">{c.icon}</span>
-            <div className="flex-1">
-              <p className="font-medium text-sm">{c.name}</p>
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm truncate">{c.name}</p>
               {c.is_default && (
                 <p className="text-xs text-gray-400">Default</p>
               )}
@@ -1196,7 +1232,7 @@ function FixedDialog({
           >
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.icon} {c.name}
+                {c.name}
               </option>
             ))}
           </select>
@@ -1282,16 +1318,7 @@ function CategoryDialog({
             className="w-full border rounded-lg h-10 mt-1"
           />
         </Field>
-        <Field label="Emoji / Icon">
-          <input
-            name="icon"
-            type="text"
-            maxLength={4}
-            defaultValue={c?.icon ?? "🏷️"}
-            placeholder="🍔"
-            className="w-full border rounded-lg px-3 py-2 mt-1"
-          />
-        </Field>
+        <input name="icon" type="hidden" defaultValue={c?.icon ?? "•"} />
         <DialogFooter
           showDelete={!isNew && !c?.is_default}
           onDelete={async () => {
@@ -1470,9 +1497,20 @@ function DrillDrawer({
             <button
               onClick={onClose}
               aria-label="Close"
-              className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+              className="text-gray-400 hover:text-gray-700 inline-flex"
             >
-              ×
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
             </button>
           </div>
         </div>
@@ -1552,21 +1590,24 @@ function FixedRows({
           <button
             key={f.id}
             onClick={() => onPick(f)}
-            className="w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 rounded-lg"
+            className="w-full text-left flex items-center gap-2 px-3 py-2 hover:bg-gray-50 rounded-lg"
           >
             <span
-              className="cat-chip"
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[35%]"
               style={{ background: c?.color ?? "#9ca3af" }}
+              title={c?.name ?? "Unknown"}
             >
-              {c?.icon ?? "❓"}
+              <span className="truncate">{c?.name ?? "Unknown"}</span>
             </span>
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm truncate">{f.name}</p>
-              <p className="text-xs text-gray-500">
+              <p className="text-[11px] text-gray-500 truncate">
                 {fmt(f.amount)} {f.frequency}
               </p>
             </div>
-            <p className="font-semibold tabular-nums">{fmt(monthly)}/mo</p>
+            <p className="font-semibold text-sm tabular-nums shrink-0">
+              {fmt(monthly)}/mo
+            </p>
           </button>
         );
       })}
@@ -1616,15 +1657,16 @@ function RemainingList({
         const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
         return (
           <div key={b.id} className="px-4 py-2.5 space-y-1.5">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <span
-                className="cat-chip"
+                className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[55%]"
                 style={{ background: c?.color ?? "#9ca3af" }}
+                title={c?.name ?? "Unknown"}
               >
-                {c?.icon ?? "❓"} {c?.name ?? "Unknown"}
+                <span className="truncate">{c?.name ?? "Unknown"}</span>
               </span>
               <p
-                className={`ml-auto font-semibold tabular-nums ${
+                className={`ml-auto font-semibold tabular-nums shrink-0 ${
                   remaining < 0 ? "text-red-600" : "text-emerald-700"
                 }`}
               >
@@ -1656,11 +1698,16 @@ function MoreSheet({
   onClose: () => void;
   onTab: (t: Tab) => void;
 }) {
-  const items: { label: string; icon: string; href?: string; tab?: Tab }[] = [
-    { label: "Budgets", icon: "🎯", tab: "budgets" },
-    { label: "Categories", icon: "🏷️", tab: "categories" },
-    { label: "Expenses", icon: "📒", tab: "expenses" },
-    { label: "Settings & Export", icon: "⚙️", href: "/settings" },
+  const items: {
+    label: string;
+    Icon: (p: { size?: number; className?: string }) => React.ReactElement;
+    href?: string;
+    tab?: Tab;
+  }[] = [
+    { label: "Budgets", Icon: IconTarget, tab: "budgets" },
+    { label: "Categories", Icon: IconTag, tab: "categories" },
+    { label: "Expenses", Icon: IconList, tab: "expenses" },
+    { label: "Settings & Export", Icon: IconSettings, href: "/settings" },
   ];
   return (
     <div
@@ -1683,19 +1730,23 @@ function MoreSheet({
                 key={it.label}
                 href={it.href}
                 onClick={onClose}
-                className="bg-gray-50 hover:bg-gray-100 rounded-2xl p-4 flex flex-col gap-1"
+                className="bg-gray-50 hover:bg-gray-100 rounded-2xl p-4 flex flex-col gap-2 text-emerald-700"
               >
-                <span className="text-2xl">{it.icon}</span>
-                <span className="text-sm font-semibold">{it.label}</span>
+                <it.Icon size={24} />
+                <span className="text-sm font-semibold text-gray-800">
+                  {it.label}
+                </span>
               </Link>
             ) : (
               <button
                 key={it.label}
                 onClick={() => it.tab && onTab(it.tab)}
-                className="bg-gray-50 hover:bg-gray-100 rounded-2xl p-4 flex flex-col gap-1 text-left"
+                className="bg-gray-50 hover:bg-gray-100 rounded-2xl p-4 flex flex-col gap-2 text-left text-emerald-700"
               >
-                <span className="text-2xl">{it.icon}</span>
-                <span className="text-sm font-semibold">{it.label}</span>
+                <it.Icon size={24} />
+                <span className="text-sm font-semibold text-gray-800">
+                  {it.label}
+                </span>
               </button>
             )
           )}
@@ -1722,13 +1773,13 @@ function BottomNav({
       <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end">
         <NavBtn
           label="Home"
-          icon="🏠"
+          Icon={IconHome}
           active={currentTab === "dashboard"}
           onClick={() => onTab("dashboard")}
         />
         <NavBtn
           label="Bills"
-          icon="📑"
+          Icon={IconReceipt}
           active={currentTab === "fixed"}
           onClick={() => onTab("fixed")}
         />
@@ -1737,17 +1788,17 @@ function BottomNav({
           aria-label="Scan receipt"
           className="flex justify-center -mt-6"
         >
-          <span className="w-14 h-14 rounded-full bg-emerald-500 text-white flex items-center justify-center text-2xl shadow-lg ring-4 ring-white">
-            📷
+          <span className="w-14 h-14 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-lg ring-4 ring-white">
+            <IconCamera size={26} strokeWidth={2} />
           </span>
         </Link>
         <NavBtn
           label="History"
-          icon="🕒"
+          Icon={IconClock}
           active={currentTab === "expenses"}
           onClick={() => onTab("expenses")}
         />
-        <NavBtn label="More" icon="•••" onClick={onMore} />
+        <NavBtn label="More" Icon={IconMore} onClick={onMore} />
       </div>
     </nav>
   );
@@ -1755,12 +1806,12 @@ function BottomNav({
 
 function NavBtn({
   label,
-  icon,
+  Icon,
   active = false,
   onClick,
 }: {
   label: string;
-  icon: string;
+  Icon: (p: { size?: number; className?: string }) => React.ReactElement;
   active?: boolean;
   onClick: () => void;
 }) {
@@ -1771,7 +1822,7 @@ function NavBtn({
         active ? "text-emerald-600" : "text-gray-500"
       }`}
     >
-      <span className="text-xl leading-none">{icon}</span>
+      <Icon size={22} />
       <span className="text-[11px] font-medium">{label}</span>
     </button>
   );

@@ -88,12 +88,10 @@ export default function CategoryPicker({
         {selected ? (
           <>
             <span
-              className="inline-block w-2 h-2 rounded-full"
+              className="inline-block w-2 h-2 rounded-full shrink-0"
               style={{ background: selected.color }}
             />
-            <span className="truncate">
-              {selected.icon} {selected.name}
-            </span>
+            <span className="truncate">{selected.name}</span>
           </>
         ) : (
           <span className="text-gray-400">Choose category</span>
@@ -124,12 +122,10 @@ export default function CategoryPicker({
               }`}
             >
               <span
-                className="inline-block w-2 h-2 rounded-full"
+                className="inline-block w-2 h-2 rounded-full shrink-0"
                 style={{ background: c.color }}
               />
-              <span className="truncate">
-                {c.icon} {c.name}
-              </span>
+              <span className="truncate">{c.name}</span>
             </button>
           ))}
           {query && !exactExists && (
