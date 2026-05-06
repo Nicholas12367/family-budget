@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+}
+
+@layer components {
+  .tab-active { @apply bg-emerald-500 text-white; }
+  .tab-inactive { @apply bg-gray-100 text-gray-700 hover:bg-gray-200; }
+  .cat-chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold text-white;
+  }
+  .progress-bar { @apply h-2 bg-gray-200 rounded-full overflow-hidden; }
+  .progress-fill { @apply h-full transition-all; }
+  .ok { @apply bg-emerald-500; }
+  .warn { @apply bg-amber-500; }
+  .over { @apply bg-red-500; }
+}
+
+dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
