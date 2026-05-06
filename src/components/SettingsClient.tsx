@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Budget, Category, Expense, FixedCost } from "@/lib/types";
 import { importCsvFiles } from "@/app/actions/import";
+import { exportExcel, exportPdf, type ExportSnapshot } from "@/lib/exporters";
 
 type Snapshot = {
   categories: Category[];
@@ -105,15 +106,55 @@ export default function SettingsClient({
       <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
         <h2 className="font-semibold">Export your data</h2>
         <p className="text-sm text-gray-600">
-          Download a JSON snapshot of all your categories, expenses, fixed costs
-          and budgets. You can re-upload it later or take it elsewhere.
+          Download a snapshot in your preferred format.
         </p>
-        <button
-          onClick={exportJson}
-          className="px-4 py-2 rounded-lg bg-gray-100 text-sm font-semibold hover:bg-gray-200"
-        >
-          ⇩ Export JSON
-        </button>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <button
+            onClick={() => {
+              const s: ExportSnapshot = {
+                email,
+                categories: snapshot.categories,
+                expenses: snapshot.expenses,
+                fixedCosts: snapshot.fixedCosts,
+                budgets: snapshot.budgets,
+              };
+              exportExcel(s);
+            }}
+            className="px-4 py-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-semibold hover:bg-emerald-100 ring-1 ring-emerald-100 text-left"
+          >
+            <div className="text-base">📊 Excel</div>
+            <div className="text-xs text-emerald-600/80 font-normal">
+              .xlsx with summary, expenses, fixed, budgets, categories
+            </div>
+          </button>
+          <button
+            onClick={() => {
+              const s: ExportSnapshot = {
+                email,
+                categories: snapshot.categories,
+                expenses: snapshot.expenses,
+                fixedCosts: snapshot.fixedCosts,
+                budgets: snapshot.budgets,
+              };
+              exportPdf(s);
+            }}
+            className="px-4 py-3 rounded-xl bg-rose-50 text-rose-700 text-sm font-semibold hover:bg-rose-100 ring-1 ring-rose-100 text-left"
+          >
+            <div className="text-base">📄 PDF report</div>
+            <div className="text-xs text-rose-600/80 font-normal">
+              Print-ready summary. Save as PDF in print dialog.
+            </div>
+          </button>
+          <button
+            onClick={exportJson}
+            className="px-4 py-3 rounded-xl bg-gray-50 text-gray-700 text-sm font-semibold hover:bg-gray-100 ring-1 ring-gray-100 text-left"
+          >
+            <div className="text-base">⇩ JSON</div>
+            <div className="text-xs text-gray-500 font-normal">
+              Raw data, re-importable later
+            </div>
+          </button>
+        </div>
       </section>
 
       <section className="bg-white rounded-xl shadow-sm p-4 space-y-2">
