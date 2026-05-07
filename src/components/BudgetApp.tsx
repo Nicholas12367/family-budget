@@ -1,14 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import {
-  Chart,
-  ArcElement,
-  Tooltip,
-  Legend,
-  DoughnutController,
-} from "chart.js";
 import type { Budget, Category, Expense, FixedCost } from "@/lib/types";
 import { fmt, fixedMonthlyEquivalent } from "@/lib/money";
 import { createExpense, deleteExpense, updateExpense } from "@/app/actions/expenses";
@@ -36,9 +29,9 @@ import {
   IconList,
   IconChevronLeft,
   IconChevronRight,
+  IconPlus,
 } from "./Icon";
 
-Chart.register(ArcElement, Tooltip, Legend, DoughnutController);
 
 type Tab = "dashboard" | "expenses" | "fixed" | "budgets" | "categories";
 
@@ -75,6 +68,7 @@ export default function BudgetApp({
   const [editFixed, setEditFixed] = useState<FixedCost | "new" | null>(null);
   const [editCategory, setEditCategory] = useState<Category | "new" | null>(null);
   const [drill, setDrill] = useState<DrillKind | null>(null);
+  const [categoryDrill, setCategoryDrill] = useState<number | null>(null);
   const [showMore, setShowMore] = useState(false);
 
   const [, startTransition] = useTransition();
@@ -185,12 +179,14 @@ export default function BudgetApp({
             catById={catById}
             onEditExpense={(e) => setEditExpense(e)}
             onDrill={setDrill}
+            onCategoryDrill={(catId) => setCategoryDrill(catId)}
           />
         )}
         {tab === "expenses" && (
           <ExpensesTab
             monthLabel={`${MONTH_NAMES[month]} ${year}`}
             monthExpenses={monthExpenses}
+            allExpenses={expenses}
             catById={catById}
             onAdd={() => setEditExpense("new")}
             onEdit={(e) => setEditExpense(e)}
@@ -209,6 +205,7 @@ export default function BudgetApp({
             categories={categories}
             budgets={budgets}
             monthExpenses={monthExpenses}
+            onCategoryClick={(catId) => setCategoryDrill(catId)}
             onChange={(catId, val) => {
               startTransition(async () => {
                 await setBudget({ category_id: catId, monthly_limit: val });
@@ -405,6 +402,21 @@ export default function BudgetApp({
         />
       )}
 
+      {categoryDrill !== null && (
+        <CategoryDrawer
+          categoryId={categoryDrill}
+          monthLabel={`${MONTH_NAMES[month]} ${year}`}
+          monthExpenses={monthExpenses}
+          budgets={budgets}
+          catById={catById}
+          onClose={() => setCategoryDrill(null)}
+          onPickExpense={(e) => {
+            setCategoryDrill(null);
+            setEditExpense(e);
+          }}
+        />
+      )}
+
       {showMore && (
         <MoreSheet
           onClose={() => setShowMore(false)}
@@ -419,8 +431,9 @@ export default function BudgetApp({
         currentTab={tab}
         onTab={(t) => setTab(t)}
         onMore={() => setShowMore(true)}
+        onAddExpense={() => setEditExpense("new")}
       />
-      <div className="h-20 md:hidden" aria-hidden="true" />
+      <div className="h-24 md:hidden" aria-hidden="true" />
     </div>
   );
 }
@@ -563,12 +576,12 @@ type DrillKind = "total" | "variable" | "fixed" | "remaining";
 function Dashboard({
   monthLabel,
   monthExpenses,
-  categories,
   budgets,
   totals,
   catById,
   onEditExpense,
   onDrill,
+  onCategoryDrill,
 }: {
   year: number;
   month: number;
@@ -585,10 +598,8 @@ function Dashboard({
   catById: Map<number, Category>;
   onEditExpense: (e: Expense) => void;
   onDrill?: (kind: DrillKind) => void;
+  onCategoryDrill?: (categoryId: number) => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const chartRef = useRef<Chart | null>(null);
-
   const byCat = useMemo(() => {
     const m = new Map<number, number>();
     monthExpenses.forEach((e) => {
@@ -597,62 +608,24 @@ function Dashboard({
     return m;
   }, [monthExpenses]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (chartRef.current) {
-      chartRef.current.destroy();
-      chartRef.current = null;
-    }
-    const labels: string[] = [];
-    const values: number[] = [];
-    const colors: string[] = [];
-    byCat.forEach((amount, catId) => {
-      const c = catById.get(catId);
-      if (!c) return;
-      labels.push(c.name);
-      values.push(amount);
-      colors.push(c.color);
-    });
-    if (values.length === 0) {
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "#9ca3af";
-        ctx.font = "14px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(
-          "No expenses yet this month",
-          canvas.width / 2,
-          canvas.height / 2
-        );
-      }
-      return;
-    }
-    chartRef.current = new Chart(canvas, {
-      type: "doughnut",
-      data: {
-        labels,
-        datasets: [
-          {
-            data: values,
-            backgroundColor: colors,
-            borderWidth: 2,
-            borderColor: "#fff",
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          legend: { position: "bottom", labels: { font: { size: 11 } } },
-        },
-      },
-    });
-    return () => {
-      chartRef.current?.destroy();
-      chartRef.current = null;
-    };
-  }, [byCat, catById]);
+  const ranked = useMemo(() => {
+    const total = totals.totalSpent;
+    return [...byCat.entries()]
+      .map(([catId, amount]) => {
+        const c = catById.get(catId);
+        return c
+          ? {
+              id: catId,
+              name: c.name,
+              color: c.color,
+              amount,
+              pct: total > 0 ? (amount / total) * 100 : 0,
+            }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => b.amount - a.amount);
+  }, [byCat, catById, totals.totalSpent]);
 
   const recent = useMemo(
     () =>
@@ -698,9 +671,36 @@ function Dashboard({
       <div className="grid md:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl p-4 shadow-sm">
           <h3 className="font-semibold mb-3">Spending by Category</h3>
-          <div className="relative" style={{ height: 260 }}>
-            <canvas ref={canvasRef} />
-          </div>
+          {ranked.length === 0 ? (
+            <p className="text-sm text-gray-500 py-6 text-center">
+              No expenses yet this month.
+            </p>
+          ) : (
+            <div className="space-y-2.5">
+              {ranked.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => onCategoryDrill?.(r.id)}
+                  className="w-full text-left flex items-center gap-3 hover:bg-gray-50 rounded-lg px-1 py-1"
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ background: r.color }}
+                  />
+                  <span className="flex-1 min-w-0 text-sm truncate">
+                    {r.name}
+                  </span>
+                  <span className="text-sm font-semibold tabular-nums shrink-0">
+                    {fmt(r.amount)}
+                  </span>
+                  <span className="text-[11px] text-gray-500 tabular-nums w-10 text-right shrink-0">
+                    {r.pct.toFixed(0)}%
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="bg-white rounded-xl p-4 shadow-sm">
           <h3 className="font-semibold mb-3">Budget Progress</h3>
@@ -718,7 +718,12 @@ function Dashboard({
                 const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
                 const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
                 return (
-                  <div key={b.id}>
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => onCategoryDrill?.(b.category_id)}
+                    className="w-full text-left hover:bg-gray-50 rounded-lg p-1"
+                  >
                     <div className="flex justify-between text-sm mb-1 gap-2">
                       <span className="flex items-center gap-1.5 min-w-0">
                         <span
@@ -737,7 +742,7 @@ function Dashboard({
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -810,22 +815,35 @@ function ExpenseRow({
 function ExpensesTab({
   monthLabel,
   monthExpenses,
+  allExpenses,
   catById,
   onAdd,
   onEdit,
 }: {
   monthLabel: string;
   monthExpenses: Expense[];
+  allExpenses: Expense[];
   catById: Map<number, Category>;
   onAdd: () => void;
   onEdit: (e: Expense) => void;
 }) {
-  const sorted = [...monthExpenses].sort((a, b) =>
-    a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id
-  );
+  const [dateFilter, setDateFilter] = useState("");
+
+  const filtered = useMemo(() => {
+    const source = dateFilter ? allExpenses : monthExpenses;
+    const list = dateFilter
+      ? source.filter((e) => e.date === dateFilter)
+      : source;
+    return [...list].sort((a, b) =>
+      a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id
+    );
+  }, [dateFilter, allExpenses, monthExpenses]);
+
+  const total = filtered.reduce((s, e) => s + Number(e.amount), 0);
+
   return (
     <section className="space-y-4">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-2">
         <h2 className="text-xl font-bold">Expenses</h2>
         <button
           onClick={onAdd}
@@ -834,14 +852,38 @@ function ExpensesTab({
           + Add Expense
         </button>
       </div>
+      <div className="bg-white rounded-xl shadow-sm p-3 flex flex-wrap items-center gap-2">
+        <label className="text-sm font-medium text-gray-700">
+          Find by date
+        </label>
+        <input
+          type="date"
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+          className="border rounded-lg px-2 py-1 text-sm flex-1 min-w-[140px]"
+        />
+        {dateFilter && (
+          <button
+            onClick={() => setDateFilter("")}
+            className="text-xs text-gray-600 underline"
+          >
+            Clear
+          </button>
+        )}
+        <span className="ml-auto text-xs text-gray-500 tabular-nums">
+          {filtered.length} item{filtered.length === 1 ? "" : "s"} • {fmt(total)}
+        </span>
+      </div>
       <div className="bg-white rounded-xl shadow-sm">
-        {sorted.length === 0 ? (
+        {filtered.length === 0 ? (
           <p className="p-6 text-sm text-gray-500 text-center">
-            No expenses for {monthLabel}. Tap “Add Expense” to log one.
+            {dateFilter
+              ? `No expenses on ${dateFilter}.`
+              : `No expenses for ${monthLabel}. Tap "Add Expense" to log one.`}
           </p>
         ) : (
           <div className="divide-y">
-            {sorted.map((e) => (
+            {filtered.map((e) => (
               <ExpenseRow
                 key={e.id}
                 e={e}
@@ -933,11 +975,13 @@ function BudgetsTab({
   budgets,
   monthExpenses,
   onChange,
+  onCategoryClick,
 }: {
   categories: Category[];
   budgets: Budget[];
   monthExpenses: Expense[];
   onChange: (categoryId: number, value: number) => void;
+  onCategoryClick: (categoryId: number) => void;
 }) {
   const spentByCat = useMemo(() => {
     const m = new Map<number, number>();
@@ -976,13 +1020,15 @@ function BudgetsTab({
           return (
             <div key={c.id} className="px-4 py-3 space-y-2">
               <div className="flex items-center gap-3">
-                <span
-                  className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[55%]"
+                <button
+                  type="button"
+                  onClick={() => onCategoryClick(c.id)}
+                  className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[55%] hover:opacity-90"
                   style={{ background: c.color }}
-                  title={c.name}
+                  title={`View expenses for ${c.name}`}
                 >
                   <span className="truncate">{c.name}</span>
-                </span>
+                </button>
                 <div className="flex-1" />
                 <div className="flex items-center gap-1">
                   <span className="text-gray-500 text-sm">$</span>
@@ -998,7 +1044,12 @@ function BudgetsTab({
                 </div>
               </div>
               {limit > 0 && (
-                <>
+                <button
+                  type="button"
+                  onClick={() => onCategoryClick(c.id)}
+                  className="w-full text-left space-y-1.5"
+                  aria-label={`View expenses in ${c.name}`}
+                >
                   <div className="progress-bar">
                     <div
                       className={`progress-fill ${cls}`}
@@ -1021,7 +1072,7 @@ function BudgetsTab({
                         : `${fmt(-remaining)} over`}
                     </span>
                   </div>
-                </>
+                </button>
               )}
             </div>
           );
@@ -1689,6 +1740,134 @@ function RemainingList({
 }
 
 // =============================================================
+// Category drill drawer — opens when a budget/category is clicked
+// =============================================================
+function CategoryDrawer({
+  categoryId,
+  monthLabel,
+  monthExpenses,
+  budgets,
+  catById,
+  onClose,
+  onPickExpense,
+}: {
+  categoryId: number;
+  monthLabel: string;
+  monthExpenses: Expense[];
+  budgets: Budget[];
+  catById: Map<number, Category>;
+  onClose: () => void;
+  onPickExpense: (e: Expense) => void;
+}) {
+  const c = catById.get(categoryId);
+  const rows = [...monthExpenses]
+    .filter((e) => e.category_id === categoryId)
+    .sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id));
+  const used = rows.reduce((s, e) => s + Number(e.amount), 0);
+  const budget = budgets.find((b) => b.category_id === categoryId);
+  const limit = budget ? Number(budget.monthly_limit) : 0;
+  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
+  const remaining = limit - used;
+
+  return (
+    <div
+      className="fixed inset-0 z-40 bg-black/30 flex items-end md:items-center md:justify-center"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white w-full md:max-w-md md:rounded-2xl rounded-t-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="px-5 pt-4 pb-3 border-b">
+          <div className="flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                {monthLabel}
+              </p>
+              <h3 className="text-lg font-bold mt-0.5 flex items-center gap-2">
+                <span
+                  className="w-2.5 h-2.5 rounded-full inline-block"
+                  style={{ background: c?.color ?? "#9ca3af" }}
+                />
+                <span className="truncate">{c?.name ?? "Unknown"}</span>
+              </h3>
+              <p className="text-2xl font-bold tabular-nums mt-1">{fmt(used)}</p>
+              {limit > 0 && (
+                <>
+                  <div className="progress-bar mt-2">
+                    <div
+                      className={`progress-fill ${cls}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1 tabular-nums">
+                    {fmt(used)} of {fmt(limit)} budget (
+                    {Math.round(pct)}%) •{" "}
+                    {remaining >= 0
+                      ? `${fmt(remaining)} left`
+                      : `${fmt(-remaining)} over`}
+                  </p>
+                </>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="text-gray-400 hover:text-gray-700 inline-flex"
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div className="overflow-y-auto p-2">
+          {rows.length === 0 ? (
+            <p className="p-4 text-sm text-gray-500 text-center">
+              No expenses in this category for {monthLabel}.
+            </p>
+          ) : (
+            <div className="divide-y">
+              {rows.map((e) => (
+                <button
+                  key={e.id}
+                  type="button"
+                  onClick={() => onPickExpense(e)}
+                  className="w-full text-left flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50"
+                >
+                  <span className="text-[11px] text-gray-500 tabular-nums shrink-0 w-14">
+                    {new Date(e.date).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      timeZone: "UTC",
+                    })}
+                  </span>
+                  <span className="flex-1 min-w-0 text-sm truncate">
+                    {e.description || "(no description)"}
+                  </span>
+                  <span className="font-semibold text-sm tabular-nums shrink-0">
+                    {fmt(e.amount)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================
 // "More" sheet — for the mobile bottom-nav More button
 // =============================================================
 function MoreSheet({
@@ -1697,6 +1876,8 @@ function MoreSheet({
 }: {
   onClose: () => void;
   onTab: (t: Tab) => void;
+  onAddFixed?: () => void;
+  onShowFixed?: () => void;
 }) {
   const items: {
     label: string;
@@ -1704,6 +1885,7 @@ function MoreSheet({
     href?: string;
     tab?: Tab;
   }[] = [
+    { label: "Bills", Icon: IconReceipt, tab: "fixed" },
     { label: "Budgets", Icon: IconTarget, tab: "budgets" },
     { label: "Categories", Icon: IconTag, tab: "categories" },
     { label: "Expenses", Icon: IconList, tab: "expenses" },
@@ -1763,26 +1945,26 @@ function BottomNav({
   currentTab,
   onTab,
   onMore,
+  onAddExpense,
 }: {
   currentTab: Tab;
   onTab: (t: Tab) => void;
   onMore: () => void;
+  onAddExpense: () => void;
 }) {
   return (
-    <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/90 backdrop-blur border-t border-gray-200 pb-[env(safe-area-inset-bottom)]">
-      <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end">
+    <nav
+      className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/90 backdrop-blur border-t border-gray-200"
+      style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.5rem)" }}
+    >
+      <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end pt-1">
         <NavBtn
           label="Home"
           Icon={IconHome}
           active={currentTab === "dashboard"}
           onClick={() => onTab("dashboard")}
         />
-        <NavBtn
-          label="Bills"
-          Icon={IconReceipt}
-          active={currentTab === "fixed"}
-          onClick={() => onTab("fixed")}
-        />
+        <NavBtn label="Add" Icon={IconPlus} onClick={onAddExpense} />
         <Link
           href="/scan"
           aria-label="Scan receipt"

@@ -29,6 +29,12 @@ export default function SettingsClient({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exportToast, setExportToast] = useState<string | null>(null);
+
+  function flash(msg: string) {
+    setExportToast(msg);
+    setTimeout(() => setExportToast(null), 4000);
+  }
 
   function exportJson() {
     const payload = {
@@ -45,6 +51,7 @@ export default function SettingsClient({
     a.download = `family-budget-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    flash("JSON downloaded.");
   }
 
   async function onImport(files: FileList | null) {
@@ -68,6 +75,11 @@ export default function SettingsClient({
 
   return (
     <div className="space-y-4">
+      {exportToast && (
+        <div className="bg-emerald-50 ring-1 ring-emerald-200 text-emerald-800 rounded-xl px-4 py-3 text-sm">
+          {exportToast}
+        </div>
+      )}
       <PushSubscribe />
 
       <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
@@ -128,6 +140,7 @@ export default function SettingsClient({
                 budgets: snapshot.budgets,
               };
               exportExcel(s);
+              flash("Excel downloaded. You can keep using the app below.");
             }}
             className="px-4 py-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-semibold hover:bg-emerald-100 ring-1 ring-emerald-100 text-left"
           >
@@ -149,6 +162,9 @@ export default function SettingsClient({
                 budgets: snapshot.budgets,
               };
               exportPdf(s);
+              flash(
+                "PDF opened in a new tab — close it to return here."
+              );
             }}
             className="px-4 py-3 rounded-xl bg-rose-50 text-rose-700 text-sm font-semibold hover:bg-rose-100 ring-1 ring-rose-100 text-left"
           >

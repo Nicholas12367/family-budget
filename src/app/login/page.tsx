@@ -71,7 +71,12 @@ async function LoginForm({
             Log in
           </button>
         </form>
-        <p className="text-sm text-gray-600 mt-4 text-center">
+        <p className="text-sm text-gray-600 mt-3 text-center">
+          <Link href="/forgot" className="text-gray-500 hover:text-emerald-700">
+            Forgot your password?
+          </Link>
+        </p>
+        <p className="text-sm text-gray-600 mt-2 text-center">
           New here?{" "}
           <Link href="/signup" className="text-emerald-600 font-medium">
             Sign up

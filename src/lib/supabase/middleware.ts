@@ -1,7 +1,13 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/auth/signout"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/signup",
+  "/forgot",
+  "/auth/callback",
+  "/auth/signout",
+];
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
 

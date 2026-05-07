@@ -31,8 +31,25 @@ export default async function SettingsPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
       <div className="flex items-center justify-between">
-        <Link href="/" className="text-emerald-700 text-sm">
-          ← Back
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white ring-1 ring-gray-200 text-emerald-700 text-sm font-semibold hover:bg-gray-50"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M19 12H5" />
+            <path d="M11 6l-6 6 6 6" />
+          </svg>
+          Back to dashboard
         </Link>
         <h1 className="text-xl font-bold">Settings</h1>
         <span />
@@ -46,6 +63,14 @@ export default async function SettingsPage() {
           budgets: budgets ?? [],
         }}
       />
+      <div className="pt-2 pb-8 flex justify-center">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600"
+        >
+          Done — back to dashboard
+        </Link>
+      </div>
     </div>
   );
 }
