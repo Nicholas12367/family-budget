@@ -36,9 +36,10 @@ async function SignupForm({
       redirect(`/signup?error=${encodeURIComponent(error.message)}`);
     }
 
-    // If a session is returned, the project has email confirmation OFF — go straight in.
+    // If a session is returned, the project has email confirmation OFF —
+    // hand the new user off to Stripe Checkout for their 7-day free trial.
     if (data.session) {
-      redirect("/");
+      redirect("/api/stripe/checkout-redirect");
     }
 
     redirect(
@@ -55,8 +56,12 @@ async function SignupForm({
           </div>
           <h1 className="font-bold text-lg">Family Budget</h1>
         </div>
-        <h2 className="text-xl font-semibold mb-4">Create your account</h2>
-        <p className="text-sm text-gray-600 mb-4">
+        <h2 className="text-xl font-semibold mb-2">Create your account</h2>
+        <p className="text-sm text-gray-600 mb-1">
+          7 days free, then $4/month CAD. Cancel anytime — card required for
+          the trial.
+        </p>
+        <p className="text-xs text-gray-500 mb-4">
           Your budget is private. Nobody else who signs up can see your numbers.
         </p>
         {params.error && (

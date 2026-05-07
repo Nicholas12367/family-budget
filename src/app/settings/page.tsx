@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import SettingsClient from "@/components/SettingsClient";
 import PeopleManager from "@/components/PeopleManager";
 import { listPeople } from "@/app/actions/people";
+import { readSub, isAllowed } from "@/lib/subscription";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +62,7 @@ export default async function SettingsPage() {
         <h1 className="text-xl font-bold">Settings</h1>
         <span />
       </div>
+      <SubscriptionCard user={user} />
       <PeopleManager initial={people} />
       <SettingsClient
         email={user.email ?? ""}
@@ -80,5 +82,56 @@ export default async function SettingsPage() {
         </Link>
       </div>
     </div>
+  );
+}
+
+function SubscriptionCard({
+  user,
+}: {
+  user: { email?: string | null; user_metadata?: Record<string, unknown> };
+}) {
+  const sub = readSub(user as Parameters<typeof readSub>[0]);
+  const allowed = isAllowed(user as Parameters<typeof isAllowed>[0]);
+  const fmtDate = (s?: number | null) =>
+    s ? new Date(s * 1000).toLocaleDateString() : "—";
+  const label =
+    sub.is_grandfathered || (user.email && user.email.toLowerCase() === "nicholas_connelly@icloud.com")
+      ? "Free (grandfathered)"
+      : sub.status === "trialing"
+        ? `Free trial — ends ${fmtDate(sub.trial_end)}`
+        : sub.status === "active"
+          ? `Active — next charge ${fmtDate(sub.current_period_end)}`
+          : sub.status === "past_due" || sub.status === "unpaid"
+            ? "Payment failed — please update card"
+            : sub.status === "canceled"
+              ? "Canceled"
+              : "Not started";
+  return (
+    <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+      <h2 className="font-semibold">Subscription</h2>
+      <p
+        className={`text-sm font-semibold ${
+          allowed ? "text-emerald-700" : "text-amber-700"
+        }`}
+      >
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {sub.customer_id && (
+          <Link
+            href="/api/stripe/portal"
+            className="inline-flex items-center px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 text-sm font-semibold hover:bg-emerald-100"
+          >
+            Manage subscription
+          </Link>
+        )}
+        <Link
+          href="/billing"
+          className="inline-flex items-center px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200"
+        >
+          Billing details
+        </Link>
+      </div>
+    </section>
   );
 }
