@@ -13,9 +13,11 @@ const PUBLIC_PATHS = [
 
 // Authenticated routes that don't require an active subscription
 // (the subscription gate sends users to /billing, so /billing itself
-// must always be reachable, plus the Stripe redirect/portal routes).
+// must always be reachable, plus the Stripe redirect/portal routes
+// and the owner-only admin dashboard).
 const SUBSCRIPTION_BYPASS_PATHS = [
   "/billing",
+  "/admin",
   "/api/stripe/webhook",
   "/api/stripe/portal",
   "/api/stripe/checkout-redirect",

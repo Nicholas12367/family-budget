@@ -29,3 +29,12 @@ export const ACTIVE_STATUSES = new Set<string>(["active", "trialing"]);
 export const GRANDFATHERED_EMAILS = new Set<string>([
   "nicholas_connelly@icloud.com",
 ]);
+
+// Owner emails — full admin access (the /admin dashboard).
+export const ADMIN_EMAILS = new Set<string>([
+  "nicholas_connelly@icloud.com",
+]);
+
+export function isAdminEmail(email: string | null | undefined): boolean {
+  return !!email && ADMIN_EMAILS.has(email.toLowerCase());
+}
