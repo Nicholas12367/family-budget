@@ -16,6 +16,16 @@ export type Expense = {
   description: string | null;
   notes: string | null;
   date: string; // YYYY-MM-DD
+  person_id?: number | null;
+};
+
+export type Person = {
+  id: number;
+  user_id: string;
+  name: string;
+  color: string;
+  is_shared: boolean;
+  sort_order: number;
 };
 
 export type FixedCost = {

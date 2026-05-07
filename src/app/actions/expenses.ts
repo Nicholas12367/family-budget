@@ -10,6 +10,13 @@ const ExpenseInput = z.object({
   description: z.string().optional().default(""),
   notes: z.string().optional().default(""),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  person_id: z
+    .preprocess(
+      (v) => (v === "" || v === undefined || v === null ? null : v),
+      z.union([z.coerce.number().int().positive(), z.null()])
+    )
+    .optional()
+    .default(null),
 });
 
 const LARGE_PURCHASE_THRESHOLD = 100;

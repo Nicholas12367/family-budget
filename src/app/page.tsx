@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import BudgetApp from "@/components/BudgetApp";
+import { listPeople } from "@/app/actions/people";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export default async function HomePage() {
     { data: expenses = [] },
     { data: fixedCosts = [] },
     { data: budgets = [] },
+    people,
   ] = await Promise.all([
     supabase
       .from("categories")
@@ -30,6 +32,7 @@ export default async function HomePage() {
       .order("id", { ascending: false }),
     supabase.from("fixed_costs").select("*").eq("user_id", user.id).order("name"),
     supabase.from("budgets").select("*").eq("user_id", user.id),
+    listPeople().catch(() => []),
   ]);
 
   return (
@@ -39,6 +42,7 @@ export default async function HomePage() {
       initialExpenses={expenses ?? []}
       initialFixedCosts={fixedCosts ?? []}
       initialBudgets={budgets ?? []}
+      initialPeople={people}
     />
   );
 }

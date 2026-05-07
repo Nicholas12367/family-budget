@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import ScanClient from "@/components/ScanClient";
+import { listPeople } from "@/app/actions/people";
 
 export const dynamic = "force-dynamic";
 
@@ -11,11 +12,14 @@ export default async function ScanPage() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: categories = [] } = await supabase
-    .from("categories")
-    .select("*")
-    .eq("user_id", user.id)
-    .order("name");
+  const [{ data: categories = [] }, people] = await Promise.all([
+    supabase
+      .from("categories")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("name"),
+    listPeople().catch(() => []),
+  ]);
 
-  return <ScanClient categories={categories ?? []} />;
+  return <ScanClient categories={categories ?? []} people={people} />;
 }

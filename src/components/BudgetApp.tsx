@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import type { Budget, Category, Expense, FixedCost } from "@/lib/types";
+import type { Budget, Category, Expense, FixedCost, Person } from "@/lib/types";
+import PersonSelector from "./PersonSelector";
 import { fmt, fixedMonthlyEquivalent } from "@/lib/money";
 import { createExpense, deleteExpense, updateExpense } from "@/app/actions/expenses";
 import {
@@ -41,6 +42,7 @@ type Props = {
   initialExpenses: Expense[];
   initialFixedCosts: FixedCost[];
   initialBudgets: Budget[];
+  initialPeople: Person[];
 };
 
 const MONTH_NAMES = [
@@ -54,6 +56,7 @@ export default function BudgetApp({
   initialExpenses,
   initialFixedCosts,
   initialBudgets,
+  initialPeople,
 }: Props) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
@@ -63,6 +66,12 @@ export default function BudgetApp({
   const [expenses, setExpenses] = useState(initialExpenses);
   const [fixedCosts, setFixedCosts] = useState(initialFixedCosts);
   const [budgets, setBudgets] = useState(initialBudgets);
+  const people = initialPeople;
+  const peopleById = useMemo(() => {
+    const m = new Map<number, Person>();
+    people.forEach((p) => m.set(p.id, p));
+    return m;
+  }, [people]);
 
   const [editExpense, setEditExpense] = useState<Expense | "new" | null>(null);
   const [editFixed, setEditFixed] = useState<FixedCost | "new" | null>(null);
@@ -177,6 +186,7 @@ export default function BudgetApp({
             budgets={budgets}
             totals={{ totalSpent, totalBudget, totalFixed, remaining }}
             catById={catById}
+            peopleById={peopleById}
             onEditExpense={(e) => setEditExpense(e)}
             onDrill={setDrill}
             onCategoryDrill={(catId) => setCategoryDrill(catId)}
@@ -188,6 +198,7 @@ export default function BudgetApp({
             monthExpenses={monthExpenses}
             allExpenses={expenses}
             catById={catById}
+            peopleById={peopleById}
             onAdd={() => setEditExpense("new")}
             onEdit={(e) => setEditExpense(e)}
           />
@@ -251,10 +262,13 @@ export default function BudgetApp({
         <ExpenseDialog
           initial={editExpense}
           categories={categories}
+          people={people}
           onCategoryCreated={(c) => setCategories((prev) => [...prev, c])}
           onClose={() => setEditExpense(null)}
           onSave={async (form, id) => {
             const data = Object.fromEntries(form);
+            const pidRaw = String(data.person_id ?? "");
+            const person_id = pidRaw === "" ? null : Number(pidRaw);
             if (id) {
               await updateExpense(id, form);
               setExpenses((prev) =>
@@ -267,6 +281,7 @@ export default function BudgetApp({
                         description: String(data.description ?? ""),
                         notes: String(data.notes ?? ""),
                         date: String(data.date),
+                        person_id,
                       }
                     : e
                 )
@@ -282,6 +297,7 @@ export default function BudgetApp({
                 description: String(data.description ?? ""),
                 notes: String(data.notes ?? ""),
                 date: String(data.date),
+                person_id,
               };
               setExpenses((prev) => [newRow, ...prev]);
             }
@@ -385,6 +401,7 @@ export default function BudgetApp({
           fixedCosts={fixedCosts}
           budgets={budgets}
           catById={catById}
+          peopleById={peopleById}
           totals={{ totalSpent, totalBudget, totalFixed, remaining }}
           onClose={() => setDrill(null)}
           onPickExpense={(e) => {
@@ -409,6 +426,7 @@ export default function BudgetApp({
           monthExpenses={monthExpenses}
           budgets={budgets}
           catById={catById}
+          peopleById={peopleById}
           onClose={() => setCategoryDrill(null)}
           onPickExpense={(e) => {
             setCategoryDrill(null);
@@ -433,7 +451,7 @@ export default function BudgetApp({
         onMore={() => setShowMore(true)}
         onAddExpense={() => setEditExpense("new")}
       />
-      <div className="h-24 md:hidden" aria-hidden="true" />
+      <div className="h-28 md:hidden" aria-hidden="true" />
     </div>
   );
 }
@@ -579,6 +597,7 @@ function Dashboard({
   budgets,
   totals,
   catById,
+  peopleById,
   onEditExpense,
   onDrill,
   onCategoryDrill,
@@ -596,6 +615,7 @@ function Dashboard({
     remaining: number;
   };
   catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
   onEditExpense: (e: Expense) => void;
   onDrill?: (kind: DrillKind) => void;
   onCategoryDrill?: (categoryId: number) => void;
@@ -750,21 +770,21 @@ function Dashboard({
         </div>
       </div>
 
-      <div className="bg-white rounded-xl p-4 shadow-sm">
-        <h3 className="font-semibold mb-3">Recent Expenses</h3>
+      <div>
+        <h3 className="font-semibold mb-3 px-1">Recent Expenses</h3>
         {recent.length === 0 ? (
-          <p className="text-sm text-gray-500 py-4">
+          <p className="text-sm text-gray-500 py-4 bg-white rounded-2xl px-4 ring-1 ring-gray-100">
             No expenses for {monthLabel}. Add one from the Expenses tab.
           </p>
         ) : (
-          <div className="divide-y">
+          <div className="space-y-2">
             {recent.map((e) => (
               <ExpenseRow
                 key={e.id}
                 e={e}
                 catById={catById}
+                peopleById={peopleById}
                 onClick={() => onEditExpense(e)}
-                compact
               />
             ))}
           </div>
@@ -777,38 +797,80 @@ function Dashboard({
 function ExpenseRow({
   e,
   catById,
+  peopleById,
   onClick,
+  showDate = false,
 }: {
   e: Expense;
   catById: Map<number, Category>;
+  peopleById?: Map<number, Person>;
   onClick?: () => void;
   compact?: boolean;
+  showDate?: boolean;
 }) {
   const c = catById.get(e.category_id) ?? {
     name: "Unknown",
     color: "#9ca3af",
   };
+  const person = e.person_id != null ? peopleById?.get(e.person_id) : null;
   return (
-    <div
+    <button
+      type="button"
       onClick={onClick}
-      className={`flex items-center gap-2 px-3 py-2.5 ${
-        onClick ? "hover:bg-gray-50 cursor-pointer" : ""
-      }`}
+      disabled={!onClick}
+      className={`w-full text-left bg-white rounded-2xl ring-1 ring-gray-100 shadow-sm px-3.5 py-3 flex items-start gap-3 ${
+        onClick ? "hover:ring-emerald-200 hover:shadow active:scale-[0.99] transition" : ""
+      } disabled:cursor-default`}
     >
       <span
-        className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[40%]"
-        style={{ background: c.color }}
-        title={c.name}
+        className="w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5"
+        style={{ background: `${c.color}22` }}
+        aria-hidden="true"
       >
-        <span className="truncate">{c.name}</span>
+        <span
+          className="w-2.5 h-2.5 rounded-full"
+          style={{ background: c.color }}
+        />
       </span>
-      <p className="flex-1 min-w-0 text-sm text-gray-700 truncate">
-        {e.description || "(no description)"}
-      </p>
-      <p className="font-semibold text-sm tabular-nums shrink-0">
+      <div className="flex-1 min-w-0">
+        <p className="font-bold text-[15px] text-gray-900 truncate">
+          {e.description || "(no description)"}
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+          <span
+            className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white"
+            style={{ background: c.color }}
+            title={c.name}
+          >
+            <span className="truncate max-w-[120px]">{c.name}</span>
+          </span>
+          {person && (
+            <span
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ring-1"
+              style={{
+                background: `${person.color}22`,
+                color: person.color,
+                borderColor: `${person.color}66`,
+              }}
+            >
+              {person.name}
+            </span>
+          )}
+          {showDate && (
+            <span className="text-[11px] text-gray-500 tabular-nums">
+              {new Date(e.date).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                timeZone: "UTC",
+              })}
+            </span>
+          )}
+        </div>
+      </div>
+      <p className="font-extrabold text-[15px] tabular-nums shrink-0 text-gray-900 mt-0.5">
         {fmt(e.amount)}
       </p>
-    </div>
+    </button>
   );
 }
 
@@ -817,6 +879,7 @@ function ExpensesTab({
   monthExpenses,
   allExpenses,
   catById,
+  peopleById,
   onAdd,
   onEdit,
 }: {
@@ -824,6 +887,7 @@ function ExpensesTab({
   monthExpenses: Expense[];
   allExpenses: Expense[];
   catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
   onAdd: () => void;
   onEdit: (e: Expense) => void;
 }) {
@@ -874,26 +938,26 @@ function ExpensesTab({
           {filtered.length} item{filtered.length === 1 ? "" : "s"} • {fmt(total)}
         </span>
       </div>
-      <div className="bg-white rounded-xl shadow-sm">
-        {filtered.length === 0 ? (
-          <p className="p-6 text-sm text-gray-500 text-center">
-            {dateFilter
-              ? `No expenses on ${dateFilter}.`
-              : `No expenses for ${monthLabel}. Tap "Add Expense" to log one.`}
-          </p>
-        ) : (
-          <div className="divide-y">
-            {filtered.map((e) => (
-              <ExpenseRow
-                key={e.id}
-                e={e}
-                catById={catById}
-                onClick={() => onEdit(e)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      {filtered.length === 0 ? (
+        <div className="bg-white rounded-2xl ring-1 ring-gray-100 shadow-sm p-6 text-sm text-gray-500 text-center">
+          {dateFilter
+            ? `No expenses on ${dateFilter}.`
+            : `No expenses for ${monthLabel}. Tap "Add Expense" to log one.`}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((e) => (
+            <ExpenseRow
+              key={e.id}
+              e={e}
+              catById={catById}
+              peopleById={peopleById}
+              onClick={() => onEdit(e)}
+              showDate={!!dateFilter || true}
+            />
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -920,52 +984,62 @@ function FixedTab({
           + Add Fixed Cost
         </button>
       </div>
-      <div className="bg-white rounded-xl shadow-sm">
-        {fixedCosts.length === 0 ? (
-          <p className="p-6 text-sm text-gray-500 text-center">
-            No fixed costs yet. Add rent, utilities, subscriptions, etc.
-          </p>
-        ) : (
-          <div className="divide-y">
-            {fixedCosts.map((f) => {
+      {fixedCosts.length === 0 ? (
+        <p className="bg-white rounded-2xl ring-1 ring-gray-100 shadow-sm p-6 text-sm text-gray-500 text-center">
+          No fixed costs yet. Add rent, utilities, subscriptions, etc.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {fixedCosts.map((f) => {
               const c = catById.get(f.category_id) ?? {
                 name: "Unknown",
                 color: "#9ca3af",
               };
               const monthly = fixedMonthlyEquivalent(f);
               return (
-                <div
+                <button
                   key={f.id}
+                  type="button"
                   onClick={() => onEdit(f)}
-                  className="flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer"
+                  className="w-full text-left bg-white rounded-2xl ring-1 ring-gray-100 shadow-sm px-3.5 py-3 flex items-start gap-3 hover:ring-emerald-200 hover:shadow active:scale-[0.99] transition"
                 >
                   <span
-                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white shadow-sm shrink-0 max-w-[35%]"
-                    style={{ background: c.color }}
-                    title={c.name}
+                    className="w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5"
+                    style={{ background: `${c.color}22` }}
+                    aria-hidden="true"
                   >
-                    <span className="truncate">{c.name}</span>
+                    <span
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ background: c.color }}
+                    />
                   </span>
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">
+                    <p className="font-bold text-[15px] text-gray-900 truncate">
                       {f.name}
                       {!f.is_active && (
-                        <span className="text-gray-400"> (paused)</span>
+                        <span className="text-gray-400 font-normal"> (paused)</span>
                       )}
                     </p>
-                    <p className="text-[11px] text-gray-500 truncate">
-                      {fmt(f.amount)} {f.frequency}
-                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold text-white"
+                        style={{ background: c.color }}
+                      >
+                        <span className="truncate max-w-[120px]">{c.name}</span>
+                      </span>
+                      <span className="text-[11px] text-gray-500 tabular-nums">
+                        {fmt(f.amount)} {f.frequency}
+                      </span>
+                    </div>
                   </div>
-                  <p className="font-semibold text-sm tabular-nums shrink-0">
+                  <p className="font-extrabold text-[15px] tabular-nums shrink-0 text-gray-900 mt-0.5">
                     {fmt(monthly)}/mo
                   </p>
-                </div>
+                </button>
               );
             })}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -1129,6 +1203,7 @@ function CategoriesTab({
 function ExpenseDialog({
   initial,
   categories,
+  people,
   onCategoryCreated,
   onClose,
   onSave,
@@ -1136,6 +1211,7 @@ function ExpenseDialog({
 }: {
   initial: Expense | "new";
   categories: Category[];
+  people: Person[];
   onCategoryCreated?: (c: Category) => void;
   onClose: () => void;
   onSave: (form: FormData, id?: number) => Promise<void>;
@@ -1147,6 +1223,7 @@ function ExpenseDialog({
   const [categoryId, setCategoryId] = useState<number>(
     e?.category_id ?? categories[0]?.id ?? 0
   );
+  const [personId, setPersonId] = useState<number | null>(e?.person_id ?? null);
 
   return (
     <DialogShell onClose={onClose}>
@@ -1156,6 +1233,7 @@ function ExpenseDialog({
           ev.preventDefault();
           const fd = new FormData(ev.currentTarget);
           fd.set("category_id", String(categoryId));
+          fd.set("person_id", personId == null ? "" : String(personId));
           await onSave(fd, e?.id);
           onClose();
         }}
@@ -1183,6 +1261,14 @@ function ExpenseDialog({
             className="mt-1"
           />
         </Field>
+        {people.length > 0 && (
+          <PersonSelector
+            people={people}
+            value={personId}
+            onChange={setPersonId}
+            className="mt-1"
+          />
+        )}
         <Field label="Description">
           <input
             name="description"
@@ -1476,6 +1562,7 @@ function DrillDrawer({
   fixedCosts,
   budgets,
   catById,
+  peopleById,
   totals,
   onClose,
   onPickExpense,
@@ -1488,6 +1575,7 @@ function DrillDrawer({
   fixedCosts: FixedCost[];
   budgets: Budget[];
   catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
   totals: {
     totalSpent: number;
     totalBudget: number;
@@ -1582,6 +1670,7 @@ function DrillDrawer({
                   key={e.id}
                   e={e}
                   catById={catById}
+                  peopleById={peopleById}
                   onClick={() => onPickExpense(e)}
                 />
               ));
@@ -1748,6 +1837,7 @@ function CategoryDrawer({
   monthExpenses,
   budgets,
   catById,
+  peopleById,
   onClose,
   onPickExpense,
 }: {
@@ -1756,6 +1846,7 @@ function CategoryDrawer({
   monthExpenses: Expense[];
   budgets: Budget[];
   catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
   onClose: () => void;
   onPickExpense: (e: Expense) => void;
 }) {
@@ -1830,34 +1921,22 @@ function CategoryDrawer({
             </button>
           </div>
         </div>
-        <div className="overflow-y-auto p-2">
+        <div className="overflow-y-auto p-3 bg-gray-50">
           {rows.length === 0 ? (
-            <p className="p-4 text-sm text-gray-500 text-center">
+            <p className="p-4 text-sm text-gray-500 text-center bg-white rounded-2xl ring-1 ring-gray-100">
               No expenses in this category for {monthLabel}.
             </p>
           ) : (
-            <div className="divide-y">
+            <div className="space-y-2">
               {rows.map((e) => (
-                <button
+                <ExpenseRow
                   key={e.id}
-                  type="button"
+                  e={e}
+                  catById={catById}
+                  peopleById={peopleById}
                   onClick={() => onPickExpense(e)}
-                  className="w-full text-left flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50"
-                >
-                  <span className="text-[11px] text-gray-500 tabular-nums shrink-0 w-14">
-                    {new Date(e.date).toLocaleDateString("en-US", {
-                      month: "short",
-                      day: "numeric",
-                      timeZone: "UTC",
-                    })}
-                  </span>
-                  <span className="flex-1 min-w-0 text-sm truncate">
-                    {e.description || "(no description)"}
-                  </span>
-                  <span className="font-semibold text-sm tabular-nums shrink-0">
-                    {fmt(e.amount)}
-                  </span>
-                </button>
+                  showDate
+                />
               ))}
             </div>
           )}
@@ -1954,10 +2033,10 @@ function BottomNav({
 }) {
   return (
     <nav
-      className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/90 backdrop-blur border-t border-gray-200"
-      style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.5rem)" }}
+      className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur border-t border-gray-200 shadow-[0_-4px_16px_rgba(0,0,0,0.04)]"
+      style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1.25rem)" }}
     >
-      <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end pt-1">
+      <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end pt-3">
         <NavBtn
           label="Home"
           Icon={IconHome}

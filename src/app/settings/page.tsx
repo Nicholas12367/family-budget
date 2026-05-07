@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import SettingsClient from "@/components/SettingsClient";
+import PeopleManager from "@/components/PeopleManager";
+import { listPeople } from "@/app/actions/people";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +19,7 @@ export default async function SettingsPage() {
     { data: expenses = [] },
     { data: fixedCosts = [] },
     { data: budgets = [] },
+    people,
   ] = await Promise.all([
     supabase
       .from("categories")
@@ -26,6 +29,7 @@ export default async function SettingsPage() {
     supabase.from("expenses").select("*").eq("user_id", user.id),
     supabase.from("fixed_costs").select("*").eq("user_id", user.id),
     supabase.from("budgets").select("*").eq("user_id", user.id),
+    listPeople().catch(() => []),
   ]);
 
   return (
@@ -54,6 +58,7 @@ export default async function SettingsPage() {
         <h1 className="text-xl font-bold">Settings</h1>
         <span />
       </div>
+      <PeopleManager initial={people} />
       <SettingsClient
         email={user.email ?? ""}
         snapshot={{

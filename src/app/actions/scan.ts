@@ -13,6 +13,13 @@ const SaveInput = z.object({
   merchant: z.string().default(""),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   total: z.coerce.number().default(0),
+  person_id: z
+    .preprocess(
+      (v) => (v === "" || v === undefined || v === null ? null : v),
+      z.union([z.coerce.number().int().positive(), z.null()])
+    )
+    .optional()
+    .default(null),
   line_items: z.array(
     z.object({
       description: z.string(),
@@ -20,6 +27,13 @@ const SaveInput = z.object({
       category_id: z.coerce.number().int().positive(),
       notes: z.string().default(""),
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      person_id: z
+        .preprocess(
+          (v) => (v === "" || v === undefined || v === null ? null : v),
+          z.union([z.coerce.number().int().positive(), z.null()])
+        )
+        .optional()
+        .default(null),
     })
   ),
 });
@@ -68,6 +82,7 @@ export async function saveScannedExpenses(input: z.input<typeof SaveInput>) {
       description: li.description,
       notes: li.notes,
       date: li.date,
+      person_id: li.person_id ?? parsed.person_id ?? null,
     }));
     const { error } = await supabase.from("expenses").insert(rows);
     if (error) throw error;
