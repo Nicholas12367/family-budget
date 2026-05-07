@@ -56,14 +56,21 @@ export type ReceiptBatch = {
 
 export type ScanLineItem = {
   description: string;
-  amount: number;
+  base_amount: number;
+  gst_taxable: boolean;
+  pst_taxable: boolean;
   category_name: string;
   notes: string;
+  amount?: number; // legacy back-compat
 };
 
 export type ScanResult = {
   merchant: string;
   date: string; // YYYY-MM-DD
-  total: number;
+  subtotal: number;
+  gst_total: number;
+  pst_total: number;
+  grand_total: number;
+  total: number; // legacy mirror of grand_total
   line_items: ScanLineItem[];
 };

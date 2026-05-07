@@ -33,7 +33,10 @@ export default async function SettingsPage() {
   ]);
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+    <div
+      className="max-w-3xl mx-auto px-4 pb-6 space-y-4"
+      style={{ paddingTop: "calc(env(safe-area-inset-top) + 1.25rem)" }}
+    >
       <div className="flex items-center justify-between">
         <Link
           href="/"

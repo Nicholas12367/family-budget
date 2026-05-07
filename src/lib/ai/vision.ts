@@ -4,14 +4,23 @@ import type { ScanResult } from "@/lib/types";
 const ScanSchema = z.object({
   merchant: z.string().default(""),
   date: z.string().default(""),
+  subtotal: z.number().default(0),
+  gst_total: z.number().default(0),
+  pst_total: z.number().default(0),
+  grand_total: z.number().default(0),
+  // legacy field — Gemini may still return this; we'll fall back to it.
   total: z.number().default(0),
   line_items: z
     .array(
       z.object({
         description: z.string(),
-        amount: z.number(),
+        base_amount: z.number().default(0),
+        gst_taxable: z.boolean().default(false),
+        pst_taxable: z.boolean().default(false),
         category_name: z.string(),
         notes: z.string().default(""),
+        // legacy: tax-inclusive amount Gemini used to return.
+        amount: z.number().optional(),
       })
     )
     .default([]),
@@ -22,35 +31,55 @@ export type Provider = "gemini";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-const PROMPT = (categoryNames: string[]) => `You are extracting line items from a retail receipt photo. Be precise — the user pays GST/PST so taxes must NOT be skipped.
+const PROMPT = (categoryNames: string[]) => `You are extracting line items from a retail receipt photo. Be precise — totals must match what's printed on the receipt EXACTLY.
 
-For each item physically printed on the receipt, return a JSON object with:
+CRITICAL ACCURACY RULES:
+- The receipt prints a subtotal, tax, and grand total. Your job is to faithfully transcribe those numbers AS PRINTED. Do not recompute them.
+- For each line item, return the pre-tax base price as printed on the receipt (NOT a tax-inclusive figure). Example: if the receipt shows "MILK 4L  $4.79", base_amount is 4.79 — never add the tax yourself.
+- Do not "distribute" tax across line items. We handle that later. Just identify, per item, whether tax applies (gst_taxable / pst_taxable booleans).
+- Walmart-style receipts often print a tax flag suffix on each line: "J", "T", "G", "Y", "TJ" → that line is GST-taxable. "P", "PST", "S" → PST-taxable. If you see a tax flag, set the corresponding boolean to true. If a line has NO tax flag and the receipt's total tax is $0 for that category, set false.
+- If the receipt has subtotal + tax block at the end, all of base_amount × (gst_taxable items) should sum (approximately) to the printed taxable subtotal — use that to verify yourself before responding.
+
+For each item physically printed on the receipt, return a JSON object:
 - description: the product name as printed
-- amount: the FINAL amount the customer paid for that line, INCLUDING any per-item or proportional GST/PST/HST that applies. If the receipt prints subtotals + a tax block at the end, distribute the tax proportionally across the taxable items so each item's "amount" reflects what was actually charged. Use a negative number ONLY for discount/refund lines.
+- base_amount: pre-tax price as printed on this line. Use a negative number ONLY for discount/refund lines.
+- gst_taxable: true if this line is subject to GST/HST
+- pst_taxable: true if this line is subject to PST
 - category_name: pick the BEST match from this exact list: ${JSON.stringify(categoryNames)}. If nothing fits, use "Other".
-- notes: short note. ALWAYS append the tax breakdown if any tax was charged on the line, in the format "(incl. GST $X.XX)" or "(incl. GST $X.XX + PST $Y.YY)". Use "" only if the line is truly tax-free.
+- notes: short note. Empty string if nothing notable.
 
-Also extract:
-- merchant: store name (e.g. "Costco Wholesale")
-- date: the PURCHASE date that is printed on the receipt, in strict YYYY-MM-DD format.
+Also extract receipt-level numbers exactly as printed:
+- merchant: store name (e.g. "Walmart", "Costco Wholesale")
+- date: receipt date in strict YYYY-MM-DD.
   CRITICAL date rules:
    - Find the date that the transaction occurred — usually printed near the top or bottom of the receipt, often labelled "Date", "Trans Date", "Date/Heure", or just appearing alongside a time stamp.
-   - Receipts often print dates in formats like "MM/DD/YYYY", "DD/MM/YYYY", "DD-MMM-YYYY", "YYYY-MM-DD", or "Mar 14 2026". Convert to YYYY-MM-DD.
-   - If the year is shown as 2 digits (e.g. "03/14/26"), assume 20YY.
-   - If both DD/MM and MM/DD are ambiguous, prefer the interpretation where the day ≤ 31 and the month ≤ 12. For Canadian receipts, prefer DD/MM/YYYY when both are valid.
-   - DO NOT use today's date as a guess. Only fall back to today's date if NO date is printed on the receipt at all.
-   - DO NOT use the loyalty/points expiry date or "valid until" date. Use the actual purchase date.
-- total: the receipt grand total — the final number the customer paid, taxes included.
-
-Sanity check: the sum of line item amounts should be close to the grand total (off by at most a few cents from rounding). If they aren't, redistribute tax until they do.
+   - Receipts often print dates as "MM/DD/YYYY", "DD/MM/YYYY", "DD-MMM-YYYY", "YYYY-MM-DD", or "May 22 2024". Convert to YYYY-MM-DD.
+   - If the year is 2 digits ("05/22/24"), assume 20YY.
+   - For Canadian receipts, prefer DD/MM/YYYY when ambiguous.
+   - DO NOT use today's date as a guess. Only fall back to today if NO date is printed at all.
+   - DO NOT use a "valid until" or loyalty expiry date.
+- subtotal: the printed subtotal (sum of pre-tax amounts as shown on receipt)
+- gst_total: the printed GST/HST total (e.g. "GST 5.000% $3.42")
+- pst_total: the printed PST/QST total (0 if not shown)
+- grand_total: the receipt's printed grand total — the final number the customer paid
 
 Output ONLY valid JSON in this exact shape:
 {
   "merchant": "string",
   "date": "YYYY-MM-DD",
-  "total": number,
+  "subtotal": number,
+  "gst_total": number,
+  "pst_total": number,
+  "grand_total": number,
   "line_items": [
-    { "description": "string", "amount": number, "category_name": "string", "notes": "string" }
+    {
+      "description": "string",
+      "base_amount": number,
+      "gst_taxable": boolean,
+      "pst_taxable": boolean,
+      "category_name": "string",
+      "notes": "string"
+    }
   ]
 }
 
@@ -108,5 +137,25 @@ export async function scanReceipt(
   if (!result.date || !/^\d{4}-\d{2}-\d{2}$/.test(result.date)) {
     result.date = new Date().toISOString().slice(0, 10);
   }
+
+  // Back-compat: if Gemini returned `total` but not `grand_total`, copy it.
+  if (!result.grand_total && result.total) {
+    result.grand_total = result.total;
+  }
+  if (!result.total && result.grand_total) {
+    result.total = result.grand_total;
+  }
+
+  // Back-compat for line items: if base_amount is 0 but legacy `amount`
+  // was returned, treat that as the line amount and zero out tax flags
+  // (we won't be able to distinguish, but at least sums work).
+  result.line_items = result.line_items.map((li) => ({
+    ...li,
+    base_amount:
+      li.base_amount > 0 || li.base_amount < 0
+        ? li.base_amount
+        : li.amount ?? 0,
+  }));
+
   return result;
 }

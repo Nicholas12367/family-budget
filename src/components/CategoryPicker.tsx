@@ -99,7 +99,7 @@ export default function CategoryPicker({
         <span className="ml-auto text-gray-400 text-xs">▾</span>
       </button>
       {open && (
-        <div className="absolute z-30 mt-1 w-64 bg-white border rounded-lg shadow-lg max-h-80 overflow-auto">
+        <div className="absolute z-50 mt-1 w-64 bg-white border rounded-lg shadow-xl max-h-80 overflow-auto">
           <div className="p-2 sticky top-0 bg-white border-b">
             <input
               autoFocus

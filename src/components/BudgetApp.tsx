@@ -468,7 +468,10 @@ function Header({
   onNextMonth: () => void;
 }) {
   return (
-    <header className="bg-white/80 backdrop-blur-md border-b border-gray-200/70 sticky top-0 z-20">
+    <header
+      className="bg-white/80 backdrop-blur-md border-b border-gray-200/70 sticky top-0 z-20"
+      style={{ paddingTop: "env(safe-area-inset-top)" }}
+    >
       <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-white shadow-md shadow-emerald-500/30 ring-1 ring-emerald-300/40">
