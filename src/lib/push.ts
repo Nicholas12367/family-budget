@@ -83,15 +83,40 @@ export async function checkBudgetThreshold(
 
   const startOfMonth = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
   const startOfNext = new Date(Date.UTC(year, month + 1, 1)).toISOString().slice(0, 10);
-  const { data: rows } = await supabase
-    .from("expenses")
-    .select("amount")
-    .eq("user_id", userId)
-    .eq("category_id", categoryId)
-    .gte("date", startOfMonth)
-    .lt("date", startOfNext);
+  const [{ data: rows }, { data: bills }] = await Promise.all([
+    supabase
+      .from("expenses")
+      .select("amount")
+      .eq("user_id", userId)
+      .eq("category_id", categoryId)
+      .gte("date", startOfMonth)
+      .lt("date", startOfNext),
+    supabase
+      .from("fixed_costs")
+      .select("amount, frequency, is_active")
+      .eq("user_id", userId)
+      .eq("category_id", categoryId)
+      .eq("is_active", true),
+  ]);
 
-  const used = (rows ?? []).reduce((s, r) => s + Number(r.amount), 0);
+  const fromExpenses = (rows ?? []).reduce(
+    (s, r) => s + Number(r.amount),
+    0
+  );
+  const fromBills = (bills ?? []).reduce((s, b) => {
+    const amt = Number(b.amount);
+    switch (b.frequency) {
+      case "weekly":
+        return s + amt * (52 / 12);
+      case "biweekly":
+        return s + amt * (26 / 12);
+      case "yearly":
+        return s + amt / 12;
+      default:
+        return s + amt; // monthly
+    }
+  }, 0);
+  const used = fromExpenses + fromBills;
   const pct = (used / limit) * 100;
 
   let crossed = 0;

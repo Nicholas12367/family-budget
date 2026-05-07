@@ -99,8 +99,41 @@ export default function BudgetApp({
 
   const totalSpent = monthExpenses.reduce((s, e) => s + Number(e.amount), 0);
   const totalBudget = budgets.reduce((s, b) => s + Number(b.monthly_limit), 0);
-  const totalFixed = fixedCosts.reduce((s, f) => s + fixedMonthlyEquivalent(f), 0);
-  const remaining = totalBudget - totalSpent;
+  const activeFixed = useMemo(
+    () => fixedCosts.filter((f) => f.is_active),
+    [fixedCosts]
+  );
+  const totalFixed = activeFixed.reduce(
+    (s, f) => s + fixedMonthlyEquivalent(f),
+    0
+  );
+
+  // Combined "spent in category this month" — variable expenses + monthly
+  // equivalent of every active fixed cost in that category. Used for
+  // every budget/category calculation so bills show up where users
+  // expect them.
+  const spentByCat = useMemo(() => {
+    const m = new Map<number, number>();
+    monthExpenses.forEach((e) => {
+      m.set(e.category_id, (m.get(e.category_id) ?? 0) + Number(e.amount));
+    });
+    activeFixed.forEach((f) => {
+      m.set(
+        f.category_id,
+        (m.get(f.category_id) ?? 0) + fixedMonthlyEquivalent(f)
+      );
+    });
+    return m;
+  }, [monthExpenses, activeFixed]);
+
+  // Remaining = sum of (limit - spent) across budgeted categories,
+  // clamped at 0 per cat so a maxed-out cat doesn't hide an under-budget
+  // one. Negative on the overall total still shows as "over budget."
+  const remaining = budgets.reduce(
+    (s, b) =>
+      s + (Number(b.monthly_limit) - (spentByCat.get(b.category_id) ?? 0)),
+    0
+  );
 
   const catById = useMemo(() => {
     const m = new Map<number, Category>();
@@ -120,12 +153,6 @@ export default function BudgetApp({
     }
     setMonth(m);
     setYear(y);
-  }
-
-  async function refreshAfter<T>(p: Promise<T>): Promise<T> {
-    const v = await p;
-    // Optimistic: caller updates local state; server-side data on next nav.
-    return v;
   }
 
   return (
@@ -185,6 +212,7 @@ export default function BudgetApp({
             categories={categories}
             budgets={budgets}
             totals={{ totalSpent, totalBudget, totalFixed, remaining }}
+            spentByCat={spentByCat}
             catById={catById}
             peopleById={peopleById}
             onEditExpense={(e) => setEditExpense(e)}
@@ -207,6 +235,7 @@ export default function BudgetApp({
           <FixedTab
             fixedCosts={fixedCosts}
             catById={catById}
+            peopleById={peopleById}
             onAdd={() => setEditFixed("new")}
             onEdit={(f) => setEditFixed(f)}
           />
@@ -215,7 +244,7 @@ export default function BudgetApp({
           <BudgetsTab
             categories={categories}
             budgets={budgets}
-            monthExpenses={monthExpenses}
+            spentByCat={spentByCat}
             onCategoryClick={(catId) => setCategoryDrill(catId)}
             onChange={(catId, val) => {
               startTransition(async () => {
@@ -313,9 +342,12 @@ export default function BudgetApp({
         <FixedDialog
           initial={editFixed}
           categories={categories}
+          people={people}
           onClose={() => setEditFixed(null)}
           onSave={async (form, id) => {
             const data = Object.fromEntries(form);
+            const pidRaw = String(data.person_id ?? "");
+            const person_id = pidRaw === "" ? null : Number(pidRaw);
             if (id) {
               await updateFixedCost(id, form);
               setFixedCosts((prev) =>
@@ -328,6 +360,7 @@ export default function BudgetApp({
                         amount: Number(data.amount),
                         frequency: data.frequency as FixedCost["frequency"],
                         is_active: !!data.is_active,
+                        person_id,
                       }
                     : f
                 )
@@ -342,6 +375,7 @@ export default function BudgetApp({
                 amount: Number(data.amount),
                 frequency: data.frequency as FixedCost["frequency"],
                 is_active: !!data.is_active,
+                person_id,
               };
               setFixedCosts((prev) => [...prev, newRow]);
             }
@@ -400,6 +434,7 @@ export default function BudgetApp({
           monthExpenses={monthExpenses}
           fixedCosts={fixedCosts}
           budgets={budgets}
+          spentByCat={spentByCat}
           catById={catById}
           peopleById={peopleById}
           totals={{ totalSpent, totalBudget, totalFixed, remaining }}
@@ -424,6 +459,7 @@ export default function BudgetApp({
           categoryId={categoryDrill}
           monthLabel={`${MONTH_NAMES[month]} ${year}`}
           monthExpenses={monthExpenses}
+          fixedCosts={activeFixed}
           budgets={budgets}
           catById={catById}
           peopleById={peopleById}
@@ -431,6 +467,10 @@ export default function BudgetApp({
           onPickExpense={(e) => {
             setCategoryDrill(null);
             setEditExpense(e);
+          }}
+          onPickFixed={(f) => {
+            setCategoryDrill(null);
+            setEditFixed(f);
           }}
         />
       )}
@@ -599,6 +639,7 @@ function Dashboard({
   monthExpenses,
   budgets,
   totals,
+  spentByCat,
   catById,
   peopleById,
   onEditExpense,
@@ -617,23 +658,16 @@ function Dashboard({
     totalFixed: number;
     remaining: number;
   };
+  spentByCat: Map<number, number>;
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
   onEditExpense: (e: Expense) => void;
   onDrill?: (kind: DrillKind) => void;
   onCategoryDrill?: (categoryId: number) => void;
 }) {
-  const byCat = useMemo(() => {
-    const m = new Map<number, number>();
-    monthExpenses.forEach((e) => {
-      m.set(e.category_id, (m.get(e.category_id) ?? 0) + Number(e.amount));
-    });
-    return m;
-  }, [monthExpenses]);
-
   const ranked = useMemo(() => {
-    const total = totals.totalSpent;
-    return [...byCat.entries()]
+    const total = totals.totalSpent + totals.totalFixed;
+    return [...spentByCat.entries()]
       .map(([catId, amount]) => {
         const c = catById.get(catId);
         return c
@@ -648,7 +682,7 @@ function Dashboard({
       })
       .filter((x): x is NonNullable<typeof x> => x !== null)
       .sort((a, b) => b.amount - a.amount);
-  }, [byCat, catById, totals.totalSpent]);
+  }, [spentByCat, catById, totals.totalSpent, totals.totalFixed]);
 
   const recent = useMemo(
     () =>
@@ -736,7 +770,7 @@ function Dashboard({
               {budgets.map((b) => {
                 const c = catById.get(b.category_id);
                 if (!c) return null;
-                const used = byCat.get(b.category_id) ?? 0;
+                const used = spentByCat.get(b.category_id) ?? 0;
                 const limit = Number(b.monthly_limit);
                 const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
                 const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
@@ -808,7 +842,6 @@ function ExpenseRow({
   catById: Map<number, Category>;
   peopleById?: Map<number, Person>;
   onClick?: () => void;
-  compact?: boolean;
   showDate?: boolean;
 }) {
   const c = catById.get(e.category_id) ?? {
@@ -956,7 +989,7 @@ function ExpensesTab({
               catById={catById}
               peopleById={peopleById}
               onClick={() => onEdit(e)}
-              showDate={!!dateFilter || true}
+              showDate
             />
           ))}
         </div>
@@ -968,11 +1001,13 @@ function ExpensesTab({
 function FixedTab({
   fixedCosts,
   catById,
+  peopleById,
   onAdd,
   onEdit,
 }: {
   fixedCosts: FixedCost[];
   catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
   onAdd: () => void;
   onEdit: (f: FixedCost) => void;
 }) {
@@ -999,6 +1034,8 @@ function FixedTab({
                 color: "#9ca3af",
               };
               const monthly = fixedMonthlyEquivalent(f);
+              const person =
+                f.person_id != null ? peopleById.get(f.person_id) : null;
               return (
                 <button
                   key={f.id}
@@ -1030,6 +1067,18 @@ function FixedTab({
                       >
                         <span className="truncate max-w-[120px]">{c.name}</span>
                       </span>
+                      {person && (
+                        <span
+                          className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ring-1"
+                          style={{
+                            background: `${person.color}22`,
+                            color: person.color,
+                            borderColor: `${person.color}66`,
+                          }}
+                        >
+                          {person.name}
+                        </span>
+                      )}
                       <span className="text-[11px] text-gray-500 tabular-nums">
                         {fmt(f.amount)} {f.frequency}
                       </span>
@@ -1050,24 +1099,16 @@ function FixedTab({
 function BudgetsTab({
   categories,
   budgets,
-  monthExpenses,
+  spentByCat,
   onChange,
   onCategoryClick,
 }: {
   categories: Category[];
   budgets: Budget[];
-  monthExpenses: Expense[];
+  spentByCat: Map<number, number>;
   onChange: (categoryId: number, value: number) => void;
   onCategoryClick: (categoryId: number) => void;
 }) {
-  const spentByCat = useMemo(() => {
-    const m = new Map<number, number>();
-    monthExpenses.forEach((e) =>
-      m.set(e.category_id, (m.get(e.category_id) ?? 0) + Number(e.amount))
-    );
-    return m;
-  }, [monthExpenses]);
-
   const sorted = useMemo(() => {
     return [...categories].sort((a, b) => {
       const aHas = budgets.some((x) => x.category_id === a.id);
@@ -1316,18 +1357,21 @@ function ExpenseDialog({
 function FixedDialog({
   initial,
   categories,
+  people,
   onClose,
   onSave,
   onDelete,
 }: {
   initial: FixedCost | "new";
   categories: Category[];
+  people: Person[];
   onClose: () => void;
   onSave: (form: FormData, id?: number) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
 }) {
   const isNew = initial === "new";
   const f = isNew ? null : initial;
+  const [personId, setPersonId] = useState<number | null>(f?.person_id ?? null);
   return (
     <DialogShell onClose={onClose}>
       <h3 className="text-lg font-bold">
@@ -1338,6 +1382,7 @@ function FixedDialog({
           ev.preventDefault();
           const fd = new FormData(ev.currentTarget);
           if (!fd.has("is_active")) fd.set("is_active", "");
+          fd.set("person_id", personId == null ? "" : String(personId));
           await onSave(fd, f?.id);
           onClose();
         }}
@@ -1390,6 +1435,14 @@ function FixedDialog({
             <option value="yearly">Yearly</option>
           </select>
         </Field>
+        {people.length > 0 && (
+          <PersonSelector
+            people={people}
+            value={personId}
+            onChange={setPersonId}
+            className="mt-1"
+          />
+        )}
         <label className="flex items-center gap-2">
           <input
             name="is_active"
@@ -1564,6 +1617,7 @@ function DrillDrawer({
   monthExpenses,
   fixedCosts,
   budgets,
+  spentByCat,
   catById,
   peopleById,
   totals,
@@ -1577,6 +1631,7 @@ function DrillDrawer({
   monthExpenses: Expense[];
   fixedCosts: FixedCost[];
   budgets: Budget[];
+  spentByCat: Map<number, number>;
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
   totals: {
@@ -1700,7 +1755,7 @@ function DrillDrawer({
           {kind === "remaining" && (
             <RemainingList
               budgets={budgets}
-              monthExpenses={monthExpenses}
+              spentByCat={spentByCat}
               catById={catById}
               onJump={onJumpBudgets}
             />
@@ -1760,12 +1815,12 @@ function FixedRows({
 
 function RemainingList({
   budgets,
-  monthExpenses,
+  spentByCat,
   catById,
   onJump,
 }: {
   budgets: Budget[];
-  monthExpenses: Expense[];
+  spentByCat: Map<number, number>;
   catById: Map<number, Category>;
   onJump: () => void;
 }) {
@@ -1773,7 +1828,7 @@ function RemainingList({
     return (
       <div className="p-5 text-center space-y-3">
         <p className="text-sm text-gray-600">
-          You haven't set any budgets yet.
+          You haven&apos;t set any budgets yet.
         </p>
         <button
           onClick={onJump}
@@ -1784,16 +1839,11 @@ function RemainingList({
       </div>
     );
 
-  const spentBy = new Map<number, number>();
-  monthExpenses.forEach((e) =>
-    spentBy.set(e.category_id, (spentBy.get(e.category_id) ?? 0) + Number(e.amount))
-  );
-
   return (
     <>
       {budgets.map((b) => {
         const c = catById.get(b.category_id);
-        const used = spentBy.get(b.category_id) ?? 0;
+        const used = spentByCat.get(b.category_id) ?? 0;
         const limit = Number(b.monthly_limit);
         const remaining = limit - used;
         const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
@@ -1838,26 +1888,36 @@ function CategoryDrawer({
   categoryId,
   monthLabel,
   monthExpenses,
+  fixedCosts,
   budgets,
   catById,
   peopleById,
   onClose,
   onPickExpense,
+  onPickFixed,
 }: {
   categoryId: number;
   monthLabel: string;
   monthExpenses: Expense[];
+  fixedCosts: FixedCost[];
   budgets: Budget[];
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
   onClose: () => void;
   onPickExpense: (e: Expense) => void;
+  onPickFixed: (f: FixedCost) => void;
 }) {
   const c = catById.get(categoryId);
   const rows = [...monthExpenses]
     .filter((e) => e.category_id === categoryId)
     .sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id));
-  const used = rows.reduce((s, e) => s + Number(e.amount), 0);
+  const billsHere = fixedCosts.filter((f) => f.category_id === categoryId);
+  const variableUsed = rows.reduce((s, e) => s + Number(e.amount), 0);
+  const billsUsed = billsHere.reduce(
+    (s, f) => s + fixedMonthlyEquivalent(f),
+    0
+  );
+  const used = variableUsed + billsUsed;
   const budget = budgets.find((b) => b.category_id === categoryId);
   const limit = budget ? Number(budget.monthly_limit) : 0;
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
@@ -1924,14 +1984,72 @@ function CategoryDrawer({
             </button>
           </div>
         </div>
-        <div className="overflow-y-auto p-3 bg-gray-50">
-          {rows.length === 0 ? (
-            <p className="p-4 text-sm text-gray-500 text-center bg-white rounded-2xl ring-1 ring-gray-100">
-              No expenses in this category for {monthLabel}.
-            </p>
-          ) : (
+        <div className="overflow-y-auto p-3 bg-gray-50 space-y-4">
+          {billsHere.length > 0 && (
             <div className="space-y-2">
-              {rows.map((e) => (
+              <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold px-1">
+                Recurring bills • {fmt(billsUsed)}/mo
+              </p>
+              {billsHere.map((f) => {
+                const monthly = fixedMonthlyEquivalent(f);
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => onPickFixed(f)}
+                    className="w-full text-left bg-white rounded-2xl ring-1 ring-violet-100 shadow-sm px-3.5 py-3 flex items-start gap-3 hover:ring-violet-200 hover:shadow active:scale-[0.99] transition"
+                  >
+                    <span
+                      className="w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5 bg-violet-100 text-violet-700"
+                      aria-hidden="true"
+                    >
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M6 3h12v18l-2-1.5L14 21l-2-1.5L10 21l-2-1.5L6 21V3z" />
+                        <path d="M9 8h6M9 12h6M9 16h4" />
+                      </svg>
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-[15px] text-gray-900 truncate">
+                        {f.name}
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5 tabular-nums">
+                        {fmt(f.amount)} {f.frequency}
+                      </p>
+                    </div>
+                    <p className="font-extrabold text-[15px] tabular-nums shrink-0 text-gray-900 mt-0.5">
+                      {fmt(monthly)}/mo
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {(rows.length > 0 || billsHere.length > 0) && (
+              <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold px-1">
+                Expenses • {fmt(variableUsed)}
+              </p>
+            )}
+            {rows.length === 0 && billsHere.length === 0 ? (
+              <p className="p-4 text-sm text-gray-500 text-center bg-white rounded-2xl ring-1 ring-gray-100">
+                Nothing in this category for {monthLabel}.
+              </p>
+            ) : rows.length === 0 ? (
+              <p className="p-3 text-sm text-gray-500 text-center bg-white rounded-2xl ring-1 ring-gray-100">
+                No variable expenses this month — only the bills above.
+              </p>
+            ) : (
+              rows.map((e) => (
                 <ExpenseRow
                   key={e.id}
                   e={e}
@@ -1940,9 +2058,9 @@ function CategoryDrawer({
                   onClick={() => onPickExpense(e)}
                   showDate
                 />
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1958,8 +2076,6 @@ function MoreSheet({
 }: {
   onClose: () => void;
   onTab: (t: Tab) => void;
-  onAddFixed?: () => void;
-  onShowFixed?: () => void;
 }) {
   const items: {
     label: string;

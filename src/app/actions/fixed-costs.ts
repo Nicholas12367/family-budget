@@ -2,6 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
+import { checkBudgetThreshold } from "@/lib/push";
 
 const FixedInput = z.object({
   category_id: z.coerce.number().int().positive(),
@@ -9,6 +10,13 @@ const FixedInput = z.object({
   amount: z.coerce.number().positive(),
   frequency: z.enum(["monthly", "biweekly", "weekly", "yearly"]),
   is_active: z.coerce.boolean(),
+  person_id: z
+    .preprocess(
+      (v) => (v === "" || v === undefined || v === null ? null : v),
+      z.union([z.coerce.number().int().positive(), z.null()])
+    )
+    .optional()
+    .default(null),
 });
 
 export async function listFixedCosts() {
@@ -31,6 +39,17 @@ export async function createFixedCost(form: FormData) {
     .insert({ ...input, user_id: user.id });
   if (error) throw error;
   revalidatePath("/");
+  if (input.is_active) {
+    try {
+      await checkBudgetThreshold(
+        user.id,
+        input.category_id,
+        new Date().toISOString().slice(0, 10)
+      );
+    } catch {
+      // push failures must not block save
+    }
+  }
 }
 
 export async function updateFixedCost(id: number, form: FormData) {
@@ -44,6 +63,17 @@ export async function updateFixedCost(id: number, form: FormData) {
     .eq("user_id", user.id);
   if (error) throw error;
   revalidatePath("/");
+  if (input.is_active) {
+    try {
+      await checkBudgetThreshold(
+        user.id,
+        input.category_id,
+        new Date().toISOString().slice(0, 10)
+      );
+    } catch {
+      // push failures must not block save
+    }
+  }
 }
 
 export async function deleteFixedCost(id: number) {

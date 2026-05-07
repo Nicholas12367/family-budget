@@ -36,6 +36,7 @@ export type FixedCost = {
   amount: number;
   frequency: "monthly" | "biweekly" | "weekly" | "yearly";
   is_active: boolean;
+  person_id?: number | null;
 };
 
 export type Budget = {

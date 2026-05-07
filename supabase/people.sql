@@ -24,3 +24,11 @@ alter table public.expenses
   references public.people(id) on delete set null;
 
 create index if not exists expenses_person_id_idx on public.expenses(person_id);
+
+-- Same for recurring bills, so a "Kate's gym" subscription can be
+-- attributed to Kate.
+alter table public.fixed_costs
+  add column if not exists person_id bigint
+  references public.people(id) on delete set null;
+
+create index if not exists fixed_costs_person_id_idx on public.fixed_costs(person_id);
