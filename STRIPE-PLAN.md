@@ -60,5 +60,72 @@ on success or `/billing` on cancel.
 - `invoice.payment_succeeded`
 - `invoice.payment_failed`
 
+## Promo / discount codes (free access)
+
+Yes, Stripe supports this natively via **coupons** + **promotion codes**.
+Zero extra code on our side — Stripe Checkout will show an "Add promotion
+code" link in its UI when we pass `allow_promotion_codes: true`.
+
+### How it works
+1. **Coupon** (backend object): defines the discount mechanics
+   (`percent_off: 100, duration: forever` for a free-forever code).
+2. **Promotion code** (customer-facing): the actual string a user types
+   ("FAMILY", "EARLYBIRD", "REACHSCREENS"). Each promo code is bound to
+   one coupon.
+3. Stripe verifies the code at checkout, applies the discount, and the
+   subscription stores it. For 100%-off-forever, the user goes through
+   the full checkout flow (we still need a card on file as planned),
+   but every monthly invoice is $0. They never get charged.
+
+### To create one (when ready, in Stripe Dashboard)
+- **Products → Coupons → New coupon**
+  - Name: e.g. "Free access"
+  - Type: Percentage discount → **100%**
+  - Duration: **Forever** (or Repeating for "free for X months", or Once)
+  - Optional: max redemptions, expiration date
+- **Products → Coupons → (your coupon) → Add promotion code**
+  - Code: e.g. `FAMILY` (case-insensitive)
+  - Optional: limit to N redemptions, restrict to first-time customers,
+    or scope to a specific Stripe customer (so only one person can use it).
+
+### Code change required (one line)
+In `src/app/api/stripe/checkout/route.ts`, when creating the Checkout
+Session, set:
+```ts
+allow_promotion_codes: true,
+```
+That makes the "Add promotion code" link appear in the Stripe Checkout
+UI. User types the code, Stripe handles the rest.
+
+### Variants worth knowing
+- **Free forever**: `percent_off: 100, duration: forever`
+- **First N months free**: `percent_off: 100, duration: repeating, duration_in_months: N`
+- **One month free** (sweetener for paid users): `duration: once`
+- **% discount**: e.g. `percent_off: 50, duration: forever` for a "friends and family" half-off code
+- **Fixed amount off**: `amount_off: 200, currency: cad` knocks $2 off (for a ~50% off effective)
+
+### Caveats / things to think about
+- A 100%-forever code is effectively "free account creation by code."
+  Limit redemptions or scope to a known email so it can't be shared
+  publicly (otherwise anyone with the code gets free access).
+- For your own grandfathering, two equally-good options:
+  - **Promo code path**: create a one-redemption code, use it once at
+    signup → cleaner, all state in Stripe.
+  - **`is_grandfathered` flag** in the `subscriptions` table → simpler,
+    no Stripe footprint at all, you skip the trial entirely.
+- Promo codes don't extend the trial — they apply a discount on top of
+  the regular schedule. With 100%-off-forever, the "trial" is moot since
+  the user is never billed anyway.
+- If you later want to revoke a code's free access for a specific user
+  (rare), you'd swap their subscription's coupon via the Stripe API. Not
+  needed for v1.
+
+### What I'll wire up when keys land
+- Add `allow_promotion_codes: true` to the Checkout Session.
+- That's it for v1. Code creation/management stays in the Stripe
+  Dashboard so you can spin up codes for friends/promos without
+  touching the codebase.
+
 ## Estimated build time
-3–4 hours focused, after Stripe keys land.
+3–4 hours focused, after Stripe keys land. Promo code support adds
+~5 minutes (one-line change above).
