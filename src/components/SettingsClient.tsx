@@ -2,14 +2,8 @@
 
 import { useState } from "react";
 import type { Budget, Category, Expense, FixedCost } from "@/lib/types";
-import { importCsvFiles } from "@/app/actions/import";
 import { exportExcel, exportPdf, type ExportSnapshot } from "@/lib/exporters";
-import {
-  IconSpreadsheet,
-  IconDocument,
-  IconBraces,
-  IconUpload,
-} from "./Icon";
+import { IconSpreadsheet, IconDocument, IconBraces } from "./Icon";
 import PushSubscribe from "./PushSubscribe";
 
 type Snapshot = {
@@ -26,9 +20,6 @@ export default function SettingsClient({
   email: string;
   snapshot: Snapshot;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [exportToast, setExportToast] = useState<string | null>(null);
 
   function flash(msg: string) {
@@ -54,25 +45,6 @@ export default function SettingsClient({
     flash("JSON downloaded.");
   }
 
-  async function onImport(files: FileList | null) {
-    if (!files || !files.length) return;
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    try {
-      const fd = new FormData();
-      Array.from(files).forEach((f) => fd.append("csv", f));
-      const summary = await importCsvFiles(fd);
-      setResult(
-        `Imported: ${summary.expenses} expenses, ${summary.fixed_costs} fixed costs, ${summary.budgets} budgets, ${summary.categories_created} categories total touched.`
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="space-y-4">
       {exportToast && (
@@ -90,38 +62,6 @@ export default function SettingsClient({
         <form action="/auth/signout" method="post">
           <button className="text-sm text-red-600 underline">Log out</button>
         </form>
-      </section>
-
-      <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
-        <h2 className="font-semibold">Import from Manus</h2>
-        <p className="text-sm text-gray-600">
-          Upload one or more <code>family-budget-YYYY-MM.csv</code> files exported
-          from your old Manus app. Expenses, fixed costs, budgets and any new
-          categories will be imported under your account.
-        </p>
-        <label className="block w-full">
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            multiple
-            disabled={busy}
-            onChange={(e) => onImport(e.target.files)}
-            className="hidden"
-          />
-          <span className="block w-full text-center px-4 py-3 rounded-lg bg-emerald-500 text-white font-semibold cursor-pointer hover:bg-emerald-600">
-            {busy ? "Importing…" : "Upload CSV files"}
-          </span>
-        </label>
-        {result && (
-          <p className="text-sm text-emerald-700 bg-emerald-50 rounded-lg p-3">
-            {result}
-          </p>
-        )}
-        {error && (
-          <p className="text-sm text-red-700 bg-red-50 rounded-lg p-3">
-            {error}
-          </p>
-        )}
       </section>
 
       <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
@@ -162,9 +102,7 @@ export default function SettingsClient({
                 budgets: snapshot.budgets,
               };
               exportPdf(s);
-              flash(
-                "PDF opened in a new tab — close it to return here."
-              );
+              flash("PDF opened in a new tab — close it to return here.");
             }}
             className="px-4 py-3 rounded-xl bg-rose-50 text-rose-700 text-sm font-semibold hover:bg-rose-100 ring-1 ring-rose-100 text-left"
           >
