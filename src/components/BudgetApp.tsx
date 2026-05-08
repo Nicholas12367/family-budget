@@ -7,7 +7,6 @@ import PersonSelector from "./PersonSelector";
 import { fmt, fixedMonthlyEquivalent } from "@/lib/money";
 import {
   buildEffectiveLimitMap,
-  getPersonalCategoryIds,
   isFutureDate,
   todayLocalISO,
   type EffectiveLimit,
@@ -139,24 +138,12 @@ export default function BudgetApp({
     return m;
   }, [monthExpenses, activeFixed]);
 
-  const personalCatIds = useMemo(
-    () => getPersonalCategoryIds(categories, people),
-    [categories, people]
-  );
-
-  // Personal budgets (named after a person) carry forward surplus/deficit
-  // each month. Everything else: effective = base.
+  // Budgets with rolls_over=true compound surplus/deficit forward each
+  // month. All others: effective = base. Compounding is anchored to
+  // the budget's created_at, so empty months still add to the rollover.
   const effectiveLimitByCat = useMemo(
-    () =>
-      buildEffectiveLimitMap(
-        budgets,
-        personalCatIds,
-        year,
-        month,
-        expenses,
-        activeFixed
-      ),
-    [budgets, personalCatIds, year, month, expenses, activeFixed]
+    () => buildEffectiveLimitMap(budgets, year, month, expenses, activeFixed),
+    [budgets, year, month, expenses, activeFixed]
   );
 
   function effectiveOf(catId: number, baseLimit: number): number {
@@ -299,14 +286,19 @@ export default function BudgetApp({
             budgets={budgets}
             spentByCat={spentByCat}
             effectiveLimitByCat={effectiveLimitByCat}
-            personalCatIds={personalCatIds}
             onCategoryClick={(catId) => setCategoryDrill(catId)}
-            onChange={(catId, val) => {
+            onSave={(catId, settings) => {
               startTransition(async () => {
-                await setBudget({ category_id: catId, monthly_limit: val });
+                await setBudget({
+                  category_id: catId,
+                  monthly_limit: settings.monthly_limit,
+                  rolls_over: settings.rolls_over,
+                  is_personal: settings.is_personal,
+                  person_name: settings.person_name,
+                });
                 setBudgets((prev) => {
                   const i = prev.findIndex((b) => b.category_id === catId);
-                  if (!val || val <= 0) {
+                  if (!settings.monthly_limit || settings.monthly_limit <= 0) {
                     if (i >= 0) {
                       const next = [...prev];
                       next.splice(i, 1);
@@ -314,18 +306,28 @@ export default function BudgetApp({
                     }
                     return prev;
                   }
+                  const merged = {
+                    monthly_limit: settings.monthly_limit,
+                    rolls_over: settings.rolls_over,
+                    is_personal: settings.is_personal,
+                    person_name: settings.is_personal
+                      ? (settings.person_name ?? null)
+                      : null,
+                  };
                   if (i >= 0) {
                     const next = [...prev];
-                    next[i] = { ...next[i], monthly_limit: val };
+                    next[i] = { ...next[i], ...merged };
                     return next;
                   }
+                  const today = new Date().toISOString();
                   return [
                     ...prev,
                     {
                       id: -Date.now(),
                       user_id: "",
                       category_id: catId,
-                      monthly_limit: val,
+                      created_at: today,
+                      ...merged,
                     },
                   ];
                 });
@@ -861,7 +863,7 @@ function Dashboard({
                 const eff = effectiveLimitByCat.get(b.category_id);
                 const limit = eff?.effective ?? Number(b.monthly_limit);
                 const rollover = eff?.rollover ?? 0;
-                const isPersonal = !!eff?.isPersonal;
+                const rollsOver = !!eff?.rollsOver;
                 const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
                 const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
                 return (
@@ -878,14 +880,14 @@ function Dashboard({
                           style={{ background: c.color }}
                         />
                         <span className="truncate">{c.name}</span>
-                        {isPersonal && rollover !== 0 && (
+                        {rollsOver && rollover !== 0 && (
                           <span
                             className={`text-[10px] font-bold tabular-nums shrink-0 px-1.5 py-0.5 rounded-full ring-1 ${
                               rollover > 0
                                 ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
                                 : "bg-rose-50 text-rose-700 ring-rose-200"
                             }`}
-                            title="Personal budget rollover"
+                            title="Rollover from prior months"
                           >
                             {rollover > 0 ? "+" : ""}
                             {fmt(rollover)}
@@ -1209,23 +1211,29 @@ function FixedTab({
   );
 }
 
+type BudgetSettings = {
+  monthly_limit: number;
+  rolls_over: boolean;
+  is_personal: boolean;
+  person_name: string | null;
+};
+
 function BudgetsTab({
   categories,
   budgets,
   spentByCat,
   effectiveLimitByCat,
-  personalCatIds,
-  onChange,
+  onSave,
   onCategoryClick,
 }: {
   categories: Category[];
   budgets: Budget[];
   spentByCat: Map<number, number>;
   effectiveLimitByCat: Map<number, EffectiveLimit>;
-  personalCatIds: Set<number>;
-  onChange: (categoryId: number, value: number) => void;
+  onSave: (categoryId: number, settings: BudgetSettings) => void;
   onCategoryClick: (categoryId: number) => void;
 }) {
+  const [editing, setEditing] = useState<Category | null>(null);
   const sorted = useMemo(() => {
     return [...categories].sort((a, b) => {
       const aHas = budgets.some((x) => x.category_id === a.id);
@@ -1235,14 +1243,18 @@ function BudgetsTab({
     });
   }, [categories, budgets]);
 
+  const editingBudget = editing
+    ? budgets.find((b) => b.category_id === editing.id) ?? null
+    : null;
+
   return (
     <section className="space-y-4">
       <div>
         <h2 className="text-xl font-bold">Monthly Budgets</h2>
         <p className="text-sm text-gray-600">
-          Most budgets reset every month. Budgets named after a person (e.g. a
-          category called <b>Kate</b> or <b>Nick</b>) carry surplus or overspend
-          forward — they roll over and compound. Leave blank to remove.
+          Tap a row to set the limit and decide whether it rolls over. When
+          rollover is on, unused balance carries forward and overspending
+          deducts from next month — compounds indefinitely.
         </p>
       </div>
       <div className="bg-white rounded-xl shadow-sm divide-y">
@@ -1252,14 +1264,16 @@ function BudgetsTab({
           const eff = effectiveLimitByCat.get(c.id);
           const limit = eff?.effective ?? baseLimit;
           const rollover = eff?.rollover ?? 0;
-          const isPersonal = personalCatIds.has(c.id);
+          const rollsOver = !!eff?.rollsOver;
+          const isPersonal = !!eff?.isPersonal;
+          const personName = eff?.personName ?? null;
           const used = spentByCat.get(c.id) ?? 0;
           const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
           const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
           const remaining = limit - used;
           return (
             <div key={c.id} className="px-4 py-3 space-y-2">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => onCategoryClick(c.id)}
@@ -1271,27 +1285,38 @@ function BudgetsTab({
                 </button>
                 {isPersonal && (
                   <span
+                    className="text-[10px] font-bold uppercase tracking-wide text-sky-700 bg-sky-50 ring-1 ring-sky-200 rounded-full px-2 py-0.5 shrink-0"
+                    title={
+                      personName
+                        ? `Personal budget for ${personName}`
+                        : "Personal budget"
+                    }
+                  >
+                    {personName ? `Personal · ${personName}` : "Personal"}
+                  </span>
+                )}
+                {rollsOver && (
+                  <span
                     className="text-[10px] font-bold uppercase tracking-wide text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200 rounded-full px-2 py-0.5 shrink-0"
-                    title="This budget rolls over each month"
+                    title="Unused balance rolls into next month"
                   >
                     Rolls over
                   </span>
                 )}
                 <div className="flex-1" />
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500 text-sm">$</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    defaultValue={baseLimit > 0 ? baseLimit : ""}
-                    onBlur={(e) => onChange(c.id, Number(e.target.value))}
-                    className="w-28 border rounded-lg px-2 py-1 text-right tabular-nums"
-                    placeholder="0.00"
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditing(c)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200"
+                >
+                  {baseLimit > 0 ? (
+                    <span className="tabular-nums">{fmt(baseLimit)}/mo</span>
+                  ) : (
+                    "Set budget"
+                  )}
+                </button>
               </div>
-              {isPersonal && baseLimit > 0 && rollover !== 0 && (
+              {rollsOver && baseLimit > 0 && rollover !== 0 && (
                 <p className="text-xs tabular-nums text-gray-600">
                   Base {fmt(baseLimit)} {rollover > 0 ? "+" : "−"}{" "}
                   <span
@@ -1342,7 +1367,186 @@ function BudgetsTab({
           );
         })}
       </div>
+
+      {editing && (
+        <BudgetSettingsDialog
+          category={editing}
+          budget={editingBudget}
+          onClose={() => setEditing(null)}
+          onSave={(s) => {
+            onSave(editing.id, s);
+            setEditing(null);
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+function BudgetSettingsDialog({
+  category,
+  budget,
+  onClose,
+  onSave,
+}: {
+  category: Category;
+  budget: Budget | null;
+  onClose: () => void;
+  onSave: (s: BudgetSettings) => void;
+}) {
+  const [limit, setLimit] = useState<string>(
+    budget && Number(budget.monthly_limit) > 0
+      ? String(Number(budget.monthly_limit))
+      : ""
+  );
+  const [rollsOver, setRollsOver] = useState<boolean>(!!budget?.rolls_over);
+  const [isPersonal, setIsPersonal] = useState<boolean>(!!budget?.is_personal);
+  const [personName, setPersonName] = useState<string>(
+    budget?.person_name ?? ""
+  );
+
+  return (
+    <DialogShell onClose={onClose}>
+      <div>
+        <h3 className="text-lg font-bold">Budget settings</h3>
+        <p className="text-xs text-gray-500 mt-0.5">
+          <span
+            className="inline-block w-2 h-2 rounded-full align-middle mr-1.5"
+            style={{ background: category.color }}
+          />
+          {category.name}
+        </p>
+      </div>
+      <form
+        onSubmit={(ev) => {
+          ev.preventDefault();
+          const value = Number(limit);
+          onSave({
+            monthly_limit: Number.isFinite(value) ? value : 0,
+            rolls_over: rollsOver,
+            is_personal: isPersonal,
+            person_name: isPersonal ? personName.trim() || null : null,
+          });
+        }}
+        className="space-y-3"
+      >
+        <Field label="Monthly limit ($)">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder="0.00 (leave blank to remove)"
+            className="w-full border rounded-lg px-3 py-2 mt-1 tabular-nums"
+            autoFocus
+          />
+        </Field>
+
+        <ToggleRow
+          label="Is this a personal budget?"
+          description="Mark this budget as belonging to one person."
+          checked={isPersonal}
+          onChange={setIsPersonal}
+        />
+        {isPersonal && (
+          <Field label="Whose budget is it?">
+            <input
+              type="text"
+              value={personName}
+              onChange={(e) => setPersonName(e.target.value)}
+              placeholder="e.g. Eric, Nick, Kate"
+              maxLength={60}
+              className="w-full border rounded-lg px-3 py-2 mt-1"
+            />
+          </Field>
+        )}
+
+        <ToggleRow
+          label="Roll over unused balance?"
+          description="Surplus carries forward; overspending deducts from next month. Compounds indefinitely."
+          checked={rollsOver}
+          onChange={setRollsOver}
+        />
+
+        <div className="flex justify-between pt-2">
+          {budget ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (!confirm(`Remove the budget for ${category.name}?`)) return;
+                onSave({
+                  monthly_limit: 0,
+                  rolls_over: false,
+                  is_personal: false,
+                  person_name: null,
+                });
+              }}
+              className="text-red-600 text-sm font-semibold"
+            >
+              Remove budget
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="ml-auto flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </form>
+    </DialogShell>
+  );
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer select-none">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`shrink-0 mt-0.5 inline-flex h-6 w-10 items-center rounded-full transition ${
+          checked ? "bg-emerald-500" : "bg-gray-300"
+        }`}
+      >
+        <span
+          className={`inline-block h-5 w-5 rounded-full bg-white shadow transform transition ${
+            checked ? "translate-x-4" : "translate-x-0.5"
+          }`}
+        />
+      </button>
+      <span className="flex-1">
+        <span className="text-sm font-medium block">{label}</span>
+        {description && (
+          <span className="text-xs text-gray-500 block mt-0.5">
+            {description}
+          </span>
+        )}
+      </span>
+    </label>
   );
 }
 
@@ -2019,7 +2223,7 @@ function RemainingList({
         const eff = effectiveLimitByCat.get(b.category_id);
         const limit = eff?.effective ?? Number(b.monthly_limit);
         const rollover = eff?.rollover ?? 0;
-        const isPersonal = !!eff?.isPersonal;
+        const rollsOver = !!eff?.rollsOver;
         const remaining = limit - used;
         const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
         const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
@@ -2033,7 +2237,7 @@ function RemainingList({
               >
                 <span className="truncate">{c?.name ?? "Unknown"}</span>
               </span>
-              {isPersonal && rollover !== 0 && (
+              {rollsOver && rollover !== 0 && (
                 <span
                   className={`text-[10px] font-bold tabular-nums shrink-0 px-1.5 py-0.5 rounded-full ring-1 ${
                     rollover > 0
@@ -2124,7 +2328,7 @@ function CategoryDrawer({
   const eff = effectiveLimitByCat.get(categoryId);
   const limit = eff?.effective ?? baseLimit;
   const rollover = eff?.rollover ?? 0;
-  const isPersonal = !!eff?.isPersonal;
+  const rollsOver = !!eff?.rollsOver;
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
   const remaining = limit - used;
@@ -2166,7 +2370,7 @@ function CategoryDrawer({
                       ? `${fmt(remaining)} left`
                       : `${fmt(-remaining)} over`}
                   </p>
-                  {isPersonal && rollover !== 0 && (
+                  {rollsOver && rollover !== 0 && (
                     <p className="text-xs mt-1 tabular-nums">
                       <span className="text-gray-500">Base {fmt(baseLimit)}</span>{" "}
                       <span

@@ -44,6 +44,15 @@ export type Budget = {
   user_id: string;
   category_id: number;
   monthly_limit: number;
+  rolls_over?: boolean;
+  is_personal?: boolean;
+  person_name?: string | null;
+  // Anchor for rollover compounding. Populated by the DB default; we
+  // read it as a string when present so we can derive the start month
+  // even before any expenses exist.
+  created_at?: string;
+  month?: number;
+  year?: number;
 };
 
 export type ReceiptBatch = {

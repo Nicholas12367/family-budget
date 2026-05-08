@@ -74,6 +74,12 @@ create table if not exists public.budgets (
 );
 create index if not exists budgets_user_period_idx on public.budgets (user_id, year, month);
 
+-- Budget metadata: explicit rollover toggle and personal-owner label.
+alter table public.budgets
+  add column if not exists rolls_over   boolean not null default false,
+  add column if not exists is_personal  boolean not null default false,
+  add column if not exists person_name  text;
+
 -- ============================================================
 -- DEFAULT CATEGORIES (system-wide, user_id IS NULL)
 -- ============================================================
