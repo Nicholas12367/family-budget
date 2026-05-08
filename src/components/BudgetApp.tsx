@@ -1609,178 +1609,6 @@ function ToggleRow({
   );
 }
 
-// Combined editor for the category drill-down: name, color, budget
-// limit, personal toggle, rollover toggle, plus delete. Used from the
-// CategoryDrawer's Edit button.
-function CategoryFullEditDialog({
-  category,
-  budget,
-  onClose,
-  onSave,
-  onDelete,
-}: {
-  category: Category;
-  budget: Budget | null;
-  onClose: () => void;
-  onSave: (changes: {
-    category: { name: string; color: string };
-    budget: BudgetSettings;
-  }) => Promise<void>;
-  onDelete: () => Promise<void>;
-}) {
-  const [name, setName] = useState(category.name);
-  const [color, setColor] = useState(category.color);
-  const [limit, setLimit] = useState<string>(
-    budget && Number(budget.monthly_limit) > 0
-      ? String(Number(budget.monthly_limit))
-      : ""
-  );
-  const [rollsOver, setRollsOver] = useState(!!budget?.rolls_over);
-  const [isPersonal, setIsPersonal] = useState(!!budget?.is_personal);
-  const [personName, setPersonName] = useState(budget?.person_name ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  return (
-    <DialogShell onClose={onClose}>
-      <h3 className="text-lg font-bold">Edit category</h3>
-      {error && (
-        <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>
-      )}
-      <form
-        onSubmit={async (ev) => {
-          ev.preventDefault();
-          if (!name.trim()) {
-            setError("Name is required.");
-            return;
-          }
-          setBusy(true);
-          setError(null);
-          try {
-            const value = Number(limit);
-            await onSave({
-              category: { name: name.trim(), color },
-              budget: {
-                monthly_limit: Number.isFinite(value) ? value : 0,
-                rolls_over: rollsOver,
-                is_personal: isPersonal,
-                person_name: isPersonal ? personName.trim() || null : null,
-              },
-            });
-          } catch (err) {
-            setError((err as Error).message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-        className="space-y-3"
-      >
-        <Field label="Name">
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            className="w-full border rounded-lg px-3 py-2 mt-1"
-          />
-        </Field>
-        <Field label="Color">
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-full border rounded-lg h-10 mt-1"
-          />
-        </Field>
-        <Field label="Monthly budget ($)">
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={limit}
-            onChange={(e) => setLimit(e.target.value)}
-            placeholder="0.00 (leave blank for no budget)"
-            className="w-full border rounded-lg px-3 py-2 mt-1 tabular-nums"
-          />
-        </Field>
-
-        <ToggleRow
-          label="Is this a personal budget?"
-          description="Mark this category as belonging to one person."
-          checked={isPersonal}
-          onChange={setIsPersonal}
-        />
-        {isPersonal && (
-          <Field label="Whose budget is it?">
-            <input
-              type="text"
-              value={personName}
-              onChange={(e) => setPersonName(e.target.value)}
-              placeholder="e.g. Eric, Nick, Kate"
-              maxLength={60}
-              className="w-full border rounded-lg px-3 py-2 mt-1"
-            />
-          </Field>
-        )}
-
-        <ToggleRow
-          label="Roll over unused balance?"
-          description="Surplus carries forward; overspending deducts from next month. Compounds indefinitely."
-          checked={rollsOver}
-          onChange={setRollsOver}
-        />
-
-        <div className="flex justify-between pt-2">
-          {!category.is_default ? (
-            <button
-              type="button"
-              onClick={async () => {
-                if (
-                  !confirm(
-                    `Delete "${category.name}"? This only works if no expenses or bills use it.`
-                  )
-                )
-                  return;
-                setBusy(true);
-                setError(null);
-                try {
-                  await onDelete();
-                } catch (err) {
-                  setError((err as Error).message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              disabled={busy}
-              className="text-red-600 text-sm font-semibold"
-            >
-              Delete category
-            </button>
-          ) : (
-            <span />
-          )}
-          <div className="ml-auto flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-2 rounded-lg bg-gray-100 text-sm"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold disabled:opacity-50"
-            >
-              {busy ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </div>
-      </form>
-    </DialogShell>
-  );
-}
-
 function CategoriesTab({
   categories,
   onAdd,
@@ -2555,8 +2383,61 @@ function CategoryDrawer({
     settings: BudgetSettings
   ) => Promise<void>;
 }) {
-  const [editing, setEditing] = useState(false);
   const c = catById.get(categoryId);
+  const budget = budgets.find((b) => b.category_id === categoryId);
+
+  // Inline-edit state for category + budget settings. Initialised from the
+  // current category/budget; resets when the drawer is opened on a new
+  // category id.
+  const [name, setName] = useState(c?.name ?? "");
+  const [color, setColor] = useState(c?.color ?? "#6366f1");
+  const [limitStr, setLimitStr] = useState<string>(
+    budget && Number(budget.monthly_limit) > 0
+      ? String(Number(budget.monthly_limit))
+      : ""
+  );
+  const [rollsOverEdit, setRollsOverEdit] = useState<boolean>(
+    !!budget?.rolls_over
+  );
+  const [isPersonal, setIsPersonal] = useState<boolean>(!!budget?.is_personal);
+  const [personName, setPersonName] = useState<string>(
+    budget?.person_name ?? ""
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Re-seed local form state when switching categories.
+  useEffect(() => {
+    setName(c?.name ?? "");
+    setColor(c?.color ?? "#6366f1");
+    setLimitStr(
+      budget && Number(budget.monthly_limit) > 0
+        ? String(Number(budget.monthly_limit))
+        : ""
+    );
+    setRollsOverEdit(!!budget?.rolls_over);
+    setIsPersonal(!!budget?.is_personal);
+    setPersonName(budget?.person_name ?? "");
+    setError(null);
+    // We intentionally key off categoryId so the form resets when the
+    // user picks a different category without remounting the drawer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryId]);
+
+  const baseLimitNumeric = Number(limitStr);
+  const baseLimitFromForm = Number.isFinite(baseLimitNumeric)
+    ? baseLimitNumeric
+    : 0;
+
+  const dirty =
+    !!c &&
+    (name.trim() !== c.name ||
+      color !== c.color ||
+      baseLimitFromForm !== Number(budget?.monthly_limit ?? 0) ||
+      rollsOverEdit !== !!budget?.rolls_over ||
+      isPersonal !== !!budget?.is_personal ||
+      (isPersonal ? personName.trim() : "") !== (budget?.person_name ?? ""));
+
   const rows = [...monthExpenses]
     .filter((e) => e.category_id === categoryId)
     .sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id));
@@ -2567,7 +2448,6 @@ function CategoryDrawer({
     0
   );
   const used = variableUsed + billsUsed;
-  const budget = budgets.find((b) => b.category_id === categoryId);
   const baseLimit = budget ? Number(budget.monthly_limit) : 0;
   const eff = effectiveLimitByCat.get(categoryId);
   const limit = eff?.effective ?? baseLimit;
@@ -2577,6 +2457,49 @@ function CategoryDrawer({
   const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
   const remaining = limit - used;
 
+  async function handleSave() {
+    if (!c) return;
+    if (!name.trim()) {
+      setError("Name is required.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await onSaveCategory(c.id, { name: name.trim(), color });
+      await onSaveBudget(c.id, {
+        monthly_limit: baseLimitFromForm,
+        rolls_over: rollsOverEdit,
+        is_personal: isPersonal,
+        person_name: isPersonal ? personName.trim() || null : null,
+      });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!c) return;
+    if (
+      !confirm(
+        `Delete "${c.name}"? This only works if no expenses or bills use it.`
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onDeleteCategory(c.id);
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-40 bg-black/30 flex items-end md:items-center md:justify-center"
@@ -2584,102 +2507,188 @@ function CategoryDrawer({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white w-full md:max-w-md md:rounded-2xl rounded-t-2xl shadow-xl max-h-[85vh] flex flex-col overflow-hidden">
-        <div className="px-5 pt-4 pb-3 border-b">
-          <div className="flex items-start gap-3">
-            <div className="flex-1 min-w-0">
-              <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
-                {monthLabel}
-              </p>
-              <h3 className="text-lg font-bold mt-0.5 flex items-center gap-2">
-                <span
-                  className="w-2.5 h-2.5 rounded-full inline-block"
-                  style={{ background: c?.color ?? "#9ca3af" }}
-                />
-                <span className="truncate">{c?.name ?? "Unknown"}</span>
-              </h3>
-              <p className="text-2xl font-bold tabular-nums mt-1">{fmt(used)}</p>
-              {limit > 0 && (
-                <>
-                  <div className="progress-bar mt-2">
-                    <div
-                      className={`progress-fill ${cls}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1 tabular-nums">
-                    {fmt(used)} of {fmt(limit)} budget (
-                    {Math.round(pct)}%) •{" "}
-                    {remaining >= 0
-                      ? `${fmt(remaining)} left`
-                      : `${fmt(-remaining)} over`}
-                  </p>
-                  {rollsOver && rollover !== 0 && (
-                    <p className="text-xs mt-1 tabular-nums">
-                      <span className="text-gray-500">Base {fmt(baseLimit)}</span>{" "}
-                      <span
-                        className={
-                          rollover > 0
-                            ? "text-emerald-700 font-semibold"
-                            : "text-rose-700 font-semibold"
-                        }
-                      >
-                        {rollover > 0 ? "+ " : "− "}
-                        {fmt(Math.abs(rollover))}
-                      </span>{" "}
-                      <span className="text-gray-500">
-                        {rollover > 0 ? "rolled over" : "from overspend"}
-                      </span>
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
-            <div className="flex items-start gap-1.5 shrink-0">
-              {c && (
-                <button
-                  type="button"
-                  onClick={() => setEditing(true)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
-                >
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M12 20h9" />
-                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-                  </svg>
-                  Edit
-                </button>
-              )}
-              <button
-                onClick={onClose}
-                aria-label="Close"
-                className="text-gray-400 hover:text-gray-700 inline-flex p-0.5"
-              >
-                <svg
-                  width="22"
-                  height="22"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
+      <div className="bg-white w-full md:max-w-md md:rounded-2xl rounded-t-2xl shadow-xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="px-5 pt-4 pb-3 border-b flex items-start gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+              {monthLabel}
+            </p>
+            <h3 className="text-lg font-bold mt-0.5 flex items-center gap-2">
+              <span
+                className="w-2.5 h-2.5 rounded-full inline-block"
+                style={{ background: color || "#9ca3af" }}
+              />
+              <span className="truncate">{name || "Unknown"}</span>
+            </h3>
           </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-gray-400 hover:text-gray-700 inline-flex p-0.5 shrink-0"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
         </div>
+
         <div className="overflow-y-auto p-3 bg-gray-50 space-y-4">
+          {/* Editable category + budget settings */}
+          {c && (
+            <form
+              onSubmit={(ev) => {
+                ev.preventDefault();
+                handleSave();
+              }}
+              className="bg-white rounded-2xl ring-1 ring-gray-100 shadow-sm p-4 space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">
+                  Category settings
+                </p>
+                {dirty && (
+                  <span className="text-[11px] text-amber-700 bg-amber-50 ring-1 ring-amber-200 rounded-full px-2 py-0.5">
+                    Unsaved changes
+                  </span>
+                )}
+              </div>
+              {error && (
+                <p className="text-sm text-red-600 bg-red-50 rounded p-2">
+                  {error}
+                </p>
+              )}
+              <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                <Field label="Name">
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    required
+                    className="w-full border rounded-lg px-3 py-2 mt-1"
+                  />
+                </Field>
+                <Field label="Color">
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => setColor(e.target.value)}
+                    className="border rounded-lg h-10 w-14 mt-1 p-1 cursor-pointer"
+                    aria-label="Category color"
+                  />
+                </Field>
+              </div>
+              <Field label="Monthly budget ($)">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={limitStr}
+                  onChange={(e) => setLimitStr(e.target.value)}
+                  placeholder="0.00 (leave blank for no budget)"
+                  className="w-full border rounded-lg px-3 py-2 mt-1 tabular-nums"
+                />
+              </Field>
+              <ToggleRow
+                label="Is this a personal budget?"
+                description="Mark this category as belonging to one person."
+                checked={isPersonal}
+                onChange={setIsPersonal}
+              />
+              {isPersonal && (
+                <Field label="Whose budget is it?">
+                  <input
+                    type="text"
+                    value={personName}
+                    onChange={(e) => setPersonName(e.target.value)}
+                    placeholder="e.g. Eric, Nick, Kate"
+                    maxLength={60}
+                    className="w-full border rounded-lg px-3 py-2 mt-1"
+                  />
+                </Field>
+              )}
+              <ToggleRow
+                label="Roll over unused balance?"
+                description="Surplus carries forward; overspending deducts from next month. Compounds indefinitely."
+                checked={rollsOverEdit}
+                onChange={setRollsOverEdit}
+              />
+              <div className="flex items-center justify-between gap-2 pt-1">
+                {!c.is_default ? (
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    disabled={busy}
+                    className="text-red-600 text-sm font-semibold disabled:opacity-50"
+                  >
+                    Delete category
+                  </button>
+                ) : (
+                  <span />
+                )}
+                <button
+                  type="submit"
+                  disabled={busy || !dirty}
+                  className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold disabled:opacity-50"
+                >
+                  {busy ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Spending summary */}
+          <div className="bg-white rounded-2xl ring-1 ring-gray-100 shadow-sm p-4 space-y-2">
+            <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">
+              Spending • {monthLabel}
+            </p>
+            <p className="text-2xl font-bold tabular-nums">{fmt(used)}</p>
+            {limit > 0 && (
+              <>
+                <div className="progress-bar">
+                  <div
+                    className={`progress-fill ${cls}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <p className="text-xs text-gray-500 tabular-nums">
+                  {fmt(used)} of {fmt(limit)} budget ({Math.round(pct)}%) •{" "}
+                  {remaining >= 0
+                    ? `${fmt(remaining)} left`
+                    : `${fmt(-remaining)} over`}
+                </p>
+                {rollsOver && rollover !== 0 && (
+                  <p className="text-xs tabular-nums">
+                    <span className="text-gray-500">
+                      Base {fmt(baseLimit)}
+                    </span>{" "}
+                    <span
+                      className={
+                        rollover > 0
+                          ? "text-emerald-700 font-semibold"
+                          : "text-rose-700 font-semibold"
+                      }
+                    >
+                      {rollover > 0 ? "+ " : "− "}
+                      {fmt(Math.abs(rollover))}
+                    </span>{" "}
+                    <span className="text-gray-500">
+                      {rollover > 0 ? "rolled over" : "from overspend"}
+                    </span>
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
           {billsHere.length > 0 && (
             <div className="space-y-2">
               <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold px-1">
@@ -2730,18 +2739,14 @@ function CategoryDrawer({
           )}
 
           <div className="space-y-2">
-            {(rows.length > 0 || billsHere.length > 0) && (
-              <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold px-1">
-                Expenses • {fmt(variableUsed)}
-              </p>
-            )}
-            {rows.length === 0 && billsHere.length === 0 ? (
+            <p className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold px-1">
+              Expenses • {fmt(variableUsed)}
+            </p>
+            {rows.length === 0 ? (
               <p className="p-4 text-sm text-gray-500 text-center bg-white rounded-2xl ring-1 ring-gray-100">
-                Nothing in this category for {monthLabel}.
-              </p>
-            ) : rows.length === 0 ? (
-              <p className="p-3 text-sm text-gray-500 text-center bg-white rounded-2xl ring-1 ring-gray-100">
-                No variable expenses this month — only the bills above.
+                {billsHere.length === 0
+                  ? `Nothing in this category for ${monthLabel}.`
+                  : "No variable expenses this month — only the bills above."}
               </p>
             ) : (
               <BulkEditableExpenseList
@@ -2759,28 +2764,6 @@ function CategoryDrawer({
           </div>
         </div>
       </div>
-
-      {editing && c && (
-        <CategoryFullEditDialog
-          category={c}
-          budget={budget ?? null}
-          onClose={() => setEditing(false)}
-          onSave={async ({ category, budget: budgetSettings }) => {
-            await onSaveCategory(c.id, category);
-            await onSaveBudget(c.id, budgetSettings);
-            setEditing(false);
-          }}
-          onDelete={async () => {
-            try {
-              await onDeleteCategory(c.id);
-              setEditing(false);
-              onClose();
-            } catch (err) {
-              alert((err as Error).message);
-            }
-          }}
-        />
-      )}
     </div>
   );
 }
