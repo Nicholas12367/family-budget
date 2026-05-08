@@ -1,6 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { getUserOrThrow } from "./auth";
+import type { Budget } from "@/lib/types";
 
 export async function listBudgets() {
   const { supabase, user } = await getUserOrThrow();
@@ -31,7 +32,7 @@ function isMissingColumnError(err: unknown): boolean {
   return /column .* does not exist|42703/i.test(msg);
 }
 
-export async function setBudget(input: SetBudgetInput) {
+export async function setBudget(input: SetBudgetInput): Promise<Budget | null> {
   const { supabase, user } = await getUserOrThrow();
   if (!input.monthly_limit || input.monthly_limit <= 0) {
     const { error } = await supabase
@@ -41,7 +42,7 @@ export async function setBudget(input: SetBudgetInput) {
       .eq("category_id", input.category_id);
     if (error) throw error;
     revalidatePath("/");
-    return;
+    return null;
   }
 
   const now = new Date();
@@ -59,20 +60,27 @@ export async function setBudget(input: SetBudgetInput) {
     person_name: input.is_personal ? (input.person_name ?? null) : null,
   };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("budgets")
-    .upsert(fullRow, { onConflict: "user_id,category_id" });
+    .upsert(fullRow, { onConflict: "user_id,category_id" })
+    .select("*")
+    .single();
+
   if (error) {
     if (isMissingColumnError(error)) {
       // Migration hasn't been run — fall back to legacy schema.
-      const { error: legacyErr } = await supabase
+      const { data: legacyData, error: legacyErr } = await supabase
         .from("budgets")
-        .upsert(baseRow, { onConflict: "user_id,category_id" });
+        .upsert(baseRow, { onConflict: "user_id,category_id" })
+        .select("*")
+        .single();
       if (legacyErr) throw legacyErr;
-    } else {
-      throw error;
+      revalidatePath("/");
+      return legacyData as Budget;
     }
+    throw error;
   }
 
   revalidatePath("/");
+  return data as Budget;
 }

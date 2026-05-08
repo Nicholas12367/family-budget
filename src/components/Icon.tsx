@@ -131,16 +131,6 @@ export function IconBell({ className, size, strokeWidth }: IconProps) {
   );
 }
 
-export function IconDownload({ className, size, strokeWidth }: IconProps) {
-  return (
-    <svg {...base(size, className, strokeWidth)}>
-      <path d="M12 4v12" />
-      <path d="M7 11l5 5 5-5" />
-      <path d="M5 20h14" />
-    </svg>
-  );
-}
-
 export function IconSpreadsheet({ className, size, strokeWidth }: IconProps) {
   return (
     <svg {...base(size, className, strokeWidth)}>
@@ -169,16 +159,6 @@ export function IconBraces({ className, size, strokeWidth }: IconProps) {
   );
 }
 
-export function IconUpload({ className, size, strokeWidth }: IconProps) {
-  return (
-    <svg {...base(size, className, strokeWidth)}>
-      <path d="M12 20V8" />
-      <path d="M7 13l5-5 5 5" />
-      <path d="M5 20h14" />
-    </svg>
-  );
-}
-
 export function IconArrowLeft({ className, size, strokeWidth }: IconProps) {
   return (
     <svg {...base(size, className, strokeWidth)}>
@@ -196,10 +176,3 @@ export function IconPlus({ className, size, strokeWidth }: IconProps) {
   );
 }
 
-export function IconClose({ className, size, strokeWidth }: IconProps) {
-  return (
-    <svg {...base(size, className, strokeWidth)}>
-      <path d="M6 6l12 12M18 6L6 18" />
-    </svg>
-  );
-}

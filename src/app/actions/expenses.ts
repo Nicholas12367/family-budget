@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
 import { checkBudgetThreshold, sendToUser } from "@/lib/push";
+import type { Expense } from "@/lib/types";
 
 const ExpenseInput = z.object({
   category_id: z.coerce.number().int().positive(),
@@ -35,13 +36,14 @@ export async function listExpenses() {
   return data;
 }
 
-export async function createExpense(form: FormData) {
+export async function createExpense(form: FormData): Promise<Expense> {
   const { supabase, user } = await getUserOrThrow();
   const input = ExpenseInput.parse(Object.fromEntries(form));
-  const { error } = await supabase.from("expenses").insert({
-    ...input,
-    user_id: user.id,
-  });
+  const { data, error } = await supabase
+    .from("expenses")
+    .insert({ ...input, user_id: user.id })
+    .select("*")
+    .single();
   if (error) throw error;
   revalidatePath("/");
 
@@ -57,18 +59,26 @@ export async function createExpense(form: FormData) {
   } catch {
     // push failures must not block the expense save
   }
+
+  return data as Expense;
 }
 
-export async function updateExpense(id: number, form: FormData) {
+export async function updateExpense(
+  id: number,
+  form: FormData
+): Promise<Expense> {
   const { supabase, user } = await getUserOrThrow();
   const input = ExpenseInput.parse(Object.fromEntries(form));
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("expenses")
     .update(input)
     .eq("id", id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
   if (error) throw error;
   revalidatePath("/");
+  return data as Expense;
 }
 
 export async function deleteExpense(id: number) {

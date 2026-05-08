@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { Budget, Category, Expense, FixedCost, Person } from "@/lib/types";
 import PersonSelector from "./PersonSelector";
 import { fmt, fixedMonthlyEquivalent } from "@/lib/money";
@@ -70,6 +71,7 @@ export default function BudgetApp({
   initialBudgets,
   initialPeople,
 }: Props) {
+  const router = useRouter();
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
@@ -78,6 +80,16 @@ export default function BudgetApp({
   const [expenses, setExpenses] = useState(initialExpenses);
   const [fixedCosts, setFixedCosts] = useState(initialFixedCosts);
   const [budgets, setBudgets] = useState(initialBudgets);
+
+  // Sync local state with fresh server props after router.refresh() (or any
+  // re-render of the parent server component). Without this, optimistic
+  // updates with placeholder IDs would persist forever and freshly-saved
+  // rows would never get their real DB ids/created_at back.
+  useEffect(() => setCategories(initialCategories), [initialCategories]);
+  useEffect(() => setExpenses(initialExpenses), [initialExpenses]);
+  useEffect(() => setFixedCosts(initialFixedCosts), [initialFixedCosts]);
+  useEffect(() => setBudgets(initialBudgets), [initialBudgets]);
+
   const people = initialPeople;
   const peopleById = useMemo(() => {
     const m = new Map<number, Person>();
@@ -91,8 +103,6 @@ export default function BudgetApp({
   const [drill, setDrill] = useState<DrillKind | null>(null);
   const [categoryDrill, setCategoryDrill] = useState<number | null>(null);
   const [showMore, setShowMore] = useState(false);
-
-  const [, startTransition] = useTransition();
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -264,10 +274,12 @@ export default function BudgetApp({
                   ids.includes(e.id) ? { ...e, ...patch } : e
                 )
               );
+              router.refresh();
             }}
             onBulkDelete={async (ids) => {
               await bulkDeleteExpenses(ids);
               setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+              router.refresh();
             }}
           />
         )}
@@ -287,51 +299,32 @@ export default function BudgetApp({
             spentByCat={spentByCat}
             effectiveLimitByCat={effectiveLimitByCat}
             onCategoryClick={(catId) => setCategoryDrill(catId)}
-            onSave={(catId, settings) => {
-              startTransition(async () => {
-                await setBudget({
-                  category_id: catId,
-                  monthly_limit: settings.monthly_limit,
-                  rolls_over: settings.rolls_over,
-                  is_personal: settings.is_personal,
-                  person_name: settings.person_name,
-                });
-                setBudgets((prev) => {
-                  const i = prev.findIndex((b) => b.category_id === catId);
-                  if (!settings.monthly_limit || settings.monthly_limit <= 0) {
-                    if (i >= 0) {
-                      const next = [...prev];
-                      next.splice(i, 1);
-                      return next;
-                    }
-                    return prev;
-                  }
-                  const merged = {
-                    monthly_limit: settings.monthly_limit,
-                    rolls_over: settings.rolls_over,
-                    is_personal: settings.is_personal,
-                    person_name: settings.is_personal
-                      ? (settings.person_name ?? null)
-                      : null,
-                  };
+            onSave={async (catId, settings) => {
+              const saved = await setBudget({
+                category_id: catId,
+                monthly_limit: settings.monthly_limit,
+                rolls_over: settings.rolls_over,
+                is_personal: settings.is_personal,
+                person_name: settings.person_name,
+              });
+              setBudgets((prev) => {
+                const i = prev.findIndex((b) => b.category_id === catId);
+                if (!saved) {
                   if (i >= 0) {
                     const next = [...prev];
-                    next[i] = { ...next[i], ...merged };
+                    next.splice(i, 1);
                     return next;
                   }
-                  const today = new Date().toISOString();
-                  return [
-                    ...prev,
-                    {
-                      id: -Date.now(),
-                      user_id: "",
-                      category_id: catId,
-                      created_at: today,
-                      ...merged,
-                    },
-                  ];
-                });
+                  return prev;
+                }
+                if (i >= 0) {
+                  const next = [...prev];
+                  next[i] = saved;
+                  return next;
+                }
+                return [...prev, saved];
               });
+              router.refresh();
             }}
           />
         )}
@@ -352,45 +345,21 @@ export default function BudgetApp({
           onCategoryCreated={(c) => setCategories((prev) => [...prev, c])}
           onClose={() => setEditExpense(null)}
           onSave={async (form, id) => {
-            const data = Object.fromEntries(form);
-            const pidRaw = String(data.person_id ?? "");
-            const person_id = pidRaw === "" ? null : Number(pidRaw);
             if (id) {
-              await updateExpense(id, form);
+              const updated = await updateExpense(id, form);
               setExpenses((prev) =>
-                prev.map((e) =>
-                  e.id === id
-                    ? {
-                        ...e,
-                        category_id: Number(data.category_id),
-                        amount: Number(data.amount),
-                        description: String(data.description ?? ""),
-                        notes: String(data.notes ?? ""),
-                        date: String(data.date),
-                        person_id,
-                      }
-                    : e
-                )
+                prev.map((e) => (e.id === id ? updated : e))
               );
             } else {
-              await createExpense(form);
-              const newRow: Expense = {
-                id: -Date.now(),
-                user_id: "",
-                category_id: Number(data.category_id),
-                receipt_batch_id: null,
-                amount: Number(data.amount),
-                description: String(data.description ?? ""),
-                notes: String(data.notes ?? ""),
-                date: String(data.date),
-                person_id,
-              };
-              setExpenses((prev) => [newRow, ...prev]);
+              const created = await createExpense(form);
+              setExpenses((prev) => [created, ...prev]);
             }
+            router.refresh();
           }}
           onDelete={async (id) => {
             await deleteExpense(id);
             setExpenses((prev) => prev.filter((e) => e.id !== id));
+            router.refresh();
           }}
         />
       )}
@@ -402,44 +371,21 @@ export default function BudgetApp({
           people={people}
           onClose={() => setEditFixed(null)}
           onSave={async (form, id) => {
-            const data = Object.fromEntries(form);
-            const pidRaw = String(data.person_id ?? "");
-            const person_id = pidRaw === "" ? null : Number(pidRaw);
             if (id) {
-              await updateFixedCost(id, form);
+              const updated = await updateFixedCost(id, form);
               setFixedCosts((prev) =>
-                prev.map((f) =>
-                  f.id === id
-                    ? {
-                        ...f,
-                        category_id: Number(data.category_id),
-                        name: String(data.name),
-                        amount: Number(data.amount),
-                        frequency: data.frequency as FixedCost["frequency"],
-                        is_active: !!data.is_active,
-                        person_id,
-                      }
-                    : f
-                )
+                prev.map((f) => (f.id === id ? updated : f))
               );
             } else {
-              await createFixedCost(form);
-              const newRow: FixedCost = {
-                id: -Date.now(),
-                user_id: "",
-                category_id: Number(data.category_id),
-                name: String(data.name),
-                amount: Number(data.amount),
-                frequency: data.frequency as FixedCost["frequency"],
-                is_active: !!data.is_active,
-                person_id,
-              };
-              setFixedCosts((prev) => [...prev, newRow]);
+              const created = await createFixedCost(form);
+              setFixedCosts((prev) => [...prev, created]);
             }
+            router.refresh();
           }}
           onDelete={async (id) => {
             await deleteFixedCost(id);
             setFixedCosts((prev) => prev.filter((f) => f.id !== id));
+            router.refresh();
           }}
         />
       )}
@@ -449,37 +395,21 @@ export default function BudgetApp({
           initial={editCategory}
           onClose={() => setEditCategory(null)}
           onSave={async (form, id) => {
-            const data = Object.fromEntries(form);
             if (id) {
-              await updateCategory(id, form);
+              const updated = await updateCategory(id, form);
               setCategories((prev) =>
-                prev.map((c) =>
-                  c.id === id
-                    ? {
-                        ...c,
-                        name: String(data.name),
-                        icon: String(data.icon ?? "🏷️"),
-                        color: String(data.color),
-                      }
-                    : c
-                )
+                prev.map((c) => (c.id === id ? updated : c))
               );
             } else {
-              await createCategory(form);
-              const newCat: Category = {
-                id: -Date.now(),
-                user_id: "",
-                name: String(data.name),
-                icon: String(data.icon ?? "🏷️"),
-                color: String(data.color),
-                is_default: false,
-              };
-              setCategories((prev) => [...prev, newCat]);
+              const created = await createCategory(form);
+              setCategories((prev) => [...prev, created]);
             }
+            router.refresh();
           }}
           onDelete={async (id) => {
             await deleteCategory(id);
             setCategories((prev) => prev.filter((c) => c.id !== id));
+            router.refresh();
           }}
         />
       )}
@@ -518,10 +448,12 @@ export default function BudgetApp({
                 ids.includes(e.id) ? { ...e, ...patch } : e
               )
             );
+            router.refresh();
           }}
           onBulkDelete={async (ids) => {
             await bulkDeleteExpenses(ids);
             setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+            router.refresh();
           }}
         />
       )}
@@ -554,10 +486,12 @@ export default function BudgetApp({
                 ids.includes(e.id) ? { ...e, ...patch } : e
               )
             );
+            router.refresh();
           }}
           onBulkDelete={async (ids) => {
             await bulkDeleteExpenses(ids);
             setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+            router.refresh();
           }}
           onSaveCategory={async (id, patch) => {
             const fd = new FormData();
@@ -565,17 +499,19 @@ export default function BudgetApp({
             fd.set("color", patch.color);
             const existing = catById.get(id);
             fd.set("icon", existing?.icon ?? "🏷️");
-            await updateCategory(id, fd);
+            const updated = await updateCategory(id, fd);
             setCategories((prev) =>
-              prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+              prev.map((c) => (c.id === id ? updated : c))
             );
+            router.refresh();
           }}
           onDeleteCategory={async (id) => {
             await deleteCategory(id);
             setCategories((prev) => prev.filter((c) => c.id !== id));
+            router.refresh();
           }}
           onSaveBudget={async (catId, settings) => {
-            await setBudget({
+            const saved = await setBudget({
               category_id: catId,
               monthly_limit: settings.monthly_limit,
               rolls_over: settings.rolls_over,
@@ -584,7 +520,7 @@ export default function BudgetApp({
             });
             setBudgets((prev) => {
               const i = prev.findIndex((b) => b.category_id === catId);
-              if (!settings.monthly_limit || settings.monthly_limit <= 0) {
+              if (!saved) {
                 if (i >= 0) {
                   const next = [...prev];
                   next.splice(i, 1);
@@ -592,31 +528,14 @@ export default function BudgetApp({
                 }
                 return prev;
               }
-              const merged = {
-                monthly_limit: settings.monthly_limit,
-                rolls_over: settings.rolls_over,
-                is_personal: settings.is_personal,
-                person_name: settings.is_personal
-                  ? (settings.person_name ?? null)
-                  : null,
-              };
               if (i >= 0) {
                 const next = [...prev];
-                next[i] = { ...next[i], ...merged };
+                next[i] = saved;
                 return next;
               }
-              const today = new Date().toISOString();
-              return [
-                ...prev,
-                {
-                  id: -Date.now(),
-                  user_id: "",
-                  category_id: catId,
-                  created_at: today,
-                  ...merged,
-                },
-              ];
+              return [...prev, saved];
             });
+            router.refresh();
           }}
         />
       )}

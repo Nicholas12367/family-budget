@@ -2,6 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
+import type { Category } from "@/lib/types";
 
 const CategoryInput = z.object({
   name: z.string().min(1),
@@ -23,7 +24,7 @@ export async function listCategories() {
   return data;
 }
 
-export async function createCategory(form: FormData) {
+export async function createCategory(form: FormData): Promise<Category> {
   const { supabase, user } = await getUserOrThrow();
   const input = CategoryInput.parse(Object.fromEntries(form));
   const { data, error } = await supabase
@@ -33,19 +34,25 @@ export async function createCategory(form: FormData) {
     .single();
   if (error) throw error;
   revalidatePath("/");
-  return data;
+  return data as Category;
 }
 
-export async function updateCategory(id: number, form: FormData) {
+export async function updateCategory(
+  id: number,
+  form: FormData
+): Promise<Category> {
   const { supabase, user } = await getUserOrThrow();
   const input = CategoryInput.parse(Object.fromEntries(form));
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("categories")
     .update(input)
     .eq("id", id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
   if (error) throw error;
   revalidatePath("/");
+  return data as Category;
 }
 
 export async function deleteCategory(id: number) {

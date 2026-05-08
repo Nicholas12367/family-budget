@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
 import { checkBudgetThreshold } from "@/lib/push";
+import type { FixedCost } from "@/lib/types";
 
 const FixedInput = z.object({
   category_id: z.coerce.number().int().positive(),
@@ -30,13 +31,15 @@ export async function listFixedCosts() {
   return data;
 }
 
-export async function createFixedCost(form: FormData) {
+export async function createFixedCost(form: FormData): Promise<FixedCost> {
   const { supabase, user } = await getUserOrThrow();
   const data = Object.fromEntries(form);
   const input = FixedInput.parse({ ...data, is_active: data.is_active ?? false });
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("fixed_costs")
-    .insert({ ...input, user_id: user.id });
+    .insert({ ...input, user_id: user.id })
+    .select("*")
+    .single();
   if (error) throw error;
   revalidatePath("/");
   if (input.is_active) {
@@ -50,17 +53,23 @@ export async function createFixedCost(form: FormData) {
       // push failures must not block save
     }
   }
+  return row as FixedCost;
 }
 
-export async function updateFixedCost(id: number, form: FormData) {
+export async function updateFixedCost(
+  id: number,
+  form: FormData
+): Promise<FixedCost> {
   const { supabase, user } = await getUserOrThrow();
   const data = Object.fromEntries(form);
   const input = FixedInput.parse({ ...data, is_active: data.is_active ?? false });
-  const { error } = await supabase
+  const { data: row, error } = await supabase
     .from("fixed_costs")
     .update(input)
     .eq("id", id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .select("*")
+    .single();
   if (error) throw error;
   revalidatePath("/");
   if (input.is_active) {
@@ -74,6 +83,7 @@ export async function updateFixedCost(id: number, form: FormData) {
       // push failures must not block save
     }
   }
+  return row as FixedCost;
 }
 
 export async function deleteFixedCost(id: number) {
