@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { fmt } from "@/lib/money";
-import { compressImage } from "@/lib/image";
+import { compressImage, ImageProcessingError } from "@/lib/image";
 import type { Category, Person, ScanResult } from "@/lib/types";
 import { isFutureDate, todayLocalISO } from "@/lib/rollover";
 import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
@@ -146,9 +146,11 @@ export default function ScanClient({
     setBusy(true);
     setProgress({ done: 0, total: files.length });
     const next: ReviewState[] = [];
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+    const failures: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const label = file.name || `Photo ${i + 1}`;
+      try {
         const compressed = await compressImage(file);
         const fd = new FormData();
         fd.append("image", compressed);
@@ -165,16 +167,34 @@ export default function ScanClient({
           thumb: reader,
           lines: buildLines(res),
         });
+      } catch (e) {
+        const err = e as Error;
+        const msg =
+          err instanceof ImageProcessingError
+            ? err.message
+            : err?.message ||
+              "Something went wrong scanning that photo. Try again.";
+        failures.push(`${label}: ${msg}`);
+      } finally {
         setProgress({ done: i + 1, total: files.length });
       }
+    }
+    if (next.length) {
       setReviews((prev) => [...prev, ...next]);
       setActiveIdx((prev) => (prev === 0 && reviews.length === 0 ? 0 : prev));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-      setProgress(null);
     }
+    if (failures.length) {
+      setError(
+        files.length === 1
+          ? // Single-file: show just the error, no filename prefix.
+            failures[0].replace(/^[^:]+:\s*/, "")
+          : `${failures.length} of ${files.length} photo${
+              files.length === 1 ? "" : "s"
+            } couldn't be scanned:\n• ${failures.join("\n• ")}`
+      );
+    }
+    setBusy(false);
+    setProgress(null);
   }
 
   function onCameraPick(file: File | undefined) {
@@ -384,9 +404,48 @@ export default function ScanClient({
       </div>
 
       {error && (
-        <p className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm">
-          {error}
-        </p>
+        <div
+          role="alert"
+          className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-3 text-sm flex items-start gap-2"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="shrink-0 mt-0.5 text-red-600"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <p className="flex-1 whitespace-pre-line">{error}</p>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="Dismiss"
+            className="shrink-0 text-red-600/80 hover:text-red-700"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
       )}
 
       {progress && (
@@ -417,7 +476,7 @@ export default function ScanClient({
           <input
             ref={cameraRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.heic,.heif"
             capture="environment"
             className="hidden"
             disabled={busy}
@@ -426,7 +485,7 @@ export default function ScanClient({
           <input
             ref={galleryRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.heic,.heif"
             multiple
             className="hidden"
             disabled={busy}

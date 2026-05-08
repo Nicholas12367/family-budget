@@ -38,15 +38,47 @@ const SaveInput = z.object({
   ),
 });
 
+// Sniff a sensible MIME type. Phones (especially iOS) sometimes hand
+// back files with an empty `type`, so we fall back to the extension.
+function detectMimeType(file: File): string {
+  if (file.type) return file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+  if (/\.(heic)$/.test(name)) return "image/heic";
+  if (/\.(heif)$/.test(name)) return "image/heif";
+  if (/\.(png)$/.test(name)) return "image/png";
+  if (/\.(webp)$/.test(name)) return "image/webp";
+  if (/\.(jpe?g)$/.test(name)) return "image/jpeg";
+  return "image/jpeg";
+}
+
 // Step 1 — extract line items from a receipt image. No DB writes.
 export async function scanReceiptAction(formData: FormData): Promise<ScanResult> {
   const { supabase, user } = await getUserOrThrow();
   const file = formData.get("image");
-  if (!(file instanceof File)) throw new Error("No image uploaded");
-  if (file.size > 10 * 1024 * 1024) throw new Error("Image too large (max 10MB)");
+  if (!(file instanceof File)) {
+    throw new Error("No image was attached. Try picking the photo again.");
+  }
+  if (file.size === 0) {
+    throw new Error("That image came through empty. Try picking the photo again.");
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    throw new Error(
+      `That photo is ${(file.size / (1024 * 1024)).toFixed(1)} MB, which is too large to upload. Try retaking the photo (we auto-shrink, but the original was over the 8 MB limit).`
+    );
+  }
 
-  const buf = Buffer.from(await file.arrayBuffer());
-  const base64 = buf.toString("base64");
+  const mimeType = detectMimeType(file);
+  if (!mimeType.startsWith("image/")) {
+    throw new Error("That file isn't an image. Pick a JPEG, PNG, or HEIC photo.");
+  }
+
+  let base64: string;
+  try {
+    const buf = Buffer.from(await file.arrayBuffer());
+    base64 = buf.toString("base64");
+  } catch {
+    throw new Error("Couldn't read the uploaded image. Try picking the photo again.");
+  }
 
   const { data: cats } = await supabase
     .from("categories")
@@ -54,7 +86,7 @@ export async function scanReceiptAction(formData: FormData): Promise<ScanResult>
     .eq("user_id", user.id);
   const categoryNames = (cats ?? []).map((c) => c.name);
 
-  return scanReceipt(base64, file.type || "image/jpeg", categoryNames);
+  return scanReceipt(base64, mimeType, categoryNames);
 }
 
 // Step 2 — save reviewed line items into expenses + a receipt_batch.

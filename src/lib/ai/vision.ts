@@ -85,13 +85,31 @@ Output ONLY valid JSON in this exact shape:
 
 No markdown, no commentary, no \`\`\` fences. Just the JSON.`;
 
+// Gemini accepts these inline image formats. Other types (TIFF, BMP, GIF)
+// must be re-encoded client-side before they reach this function.
+const SUPPORTED_GEMINI_MIME = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
+const TIMEOUT_MS = 55_000;
+
 export async function scanReceipt(
   imageBase64: string,
   mimeType: string,
   categoryNames: string[]
 ): Promise<ScanResult> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
+  if (!apiKey) {
+    throw new Error(
+      "Receipt scanning isn't configured on the server (GEMINI_API_KEY missing). Contact support."
+    );
+  }
+
+  const safeMime = SUPPORTED_GEMINI_MIME.has(mimeType) ? mimeType : "image/jpeg";
 
   const body = {
     contents: [
@@ -99,7 +117,7 @@ export async function scanReceipt(
         role: "user",
         parts: [
           { text: PROMPT(categoryNames) },
-          { inlineData: { mimeType, data: imageBase64 } },
+          { inlineData: { mimeType: safeMime, data: imageBase64 } },
         ],
       },
     ],
@@ -109,31 +127,111 @@ export async function scanReceipt(
     },
   };
 
-  const res = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${text}`);
+  let res: Response;
+  try {
+    res = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    if ((e as { name?: string }).name === "AbortError") {
+      throw new Error(
+        "The receipt scan took too long (over 55 seconds). The photo may be very large or the AI service is slow — try again, or use a clearer/cropped photo."
+      );
+    }
+    throw new Error(
+      "Couldn't reach the receipt scanning service. Check your connection and try again."
+    );
+  } finally {
+    clearTimeout(timeoutId);
   }
 
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("Gemini returned no text");
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const errBody = await res.json();
+      // Gemini's error shape: { error: { code, message, status } }
+      detail = errBody?.error?.message || JSON.stringify(errBody);
+    } catch {
+      try {
+        detail = await res.text();
+      } catch {
+        detail = "";
+      }
+    }
+    if (res.status === 400 && /image|inline|mime|format/i.test(detail)) {
+      throw new Error(
+        "The AI couldn't read this image format. Try a JPEG or PNG photo of the receipt."
+      );
+    }
+    if (res.status === 413) {
+      throw new Error(
+        "The receipt photo is too large for the AI. Take a tighter shot of just the receipt."
+      );
+    }
+    if (res.status === 429) {
+      throw new Error(
+        "Receipt scanning is rate-limited right now. Wait a minute and try again."
+      );
+    }
+    if (res.status >= 500) {
+      throw new Error(
+        "The AI service is temporarily unavailable. Try again in a moment."
+      );
+    }
+    throw new Error(
+      `Receipt scan failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ""}`
+    );
+  }
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(
+      "The AI returned a malformed response. Try retaking the photo."
+    );
+  }
+  const text = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })
+    ?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error(
+      "The AI couldn't extract any items from this photo. Make sure the receipt is in focus, well-lit, and not cut off."
+    );
+  }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("Gemini did not return JSON");
-    parsed = JSON.parse(match[0]);
+    if (!match) {
+      throw new Error(
+        "The AI didn't return structured data for this receipt. Try a clearer photo."
+      );
+    }
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch {
+      throw new Error(
+        "Couldn't parse the receipt data. Try a clearer photo or retake."
+      );
+    }
   }
 
-  const result = ScanSchema.parse(parsed);
+  let result;
+  try {
+    result = ScanSchema.parse(parsed);
+  } catch {
+    throw new Error(
+      "The AI's response didn't match the expected receipt format. Try a clearer photo of the full receipt."
+    );
+  }
   if (!result.date || !/^\d{4}-\d{2}-\d{2}$/.test(result.date)) {
     result.date = new Date().toISOString().slice(0, 10);
   }

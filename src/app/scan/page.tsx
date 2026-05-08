@@ -4,6 +4,10 @@ import ScanClient from "@/components/ScanClient";
 import { listPeople } from "@/app/actions/people";
 
 export const dynamic = "force-dynamic";
+// Receipt OCR can take 20–40s on long receipts; the default 10s server
+// action timeout chops it off mid-flight and gives the user a confusing
+// generic error.
+export const maxDuration = 60;
 
 export default async function ScanPage() {
   const supabase = await createClient();
