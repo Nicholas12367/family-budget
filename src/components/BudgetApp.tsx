@@ -5,7 +5,20 @@ import Link from "next/link";
 import type { Budget, Category, Expense, FixedCost, Person } from "@/lib/types";
 import PersonSelector from "./PersonSelector";
 import { fmt, fixedMonthlyEquivalent } from "@/lib/money";
-import { createExpense, deleteExpense, updateExpense } from "@/app/actions/expenses";
+import {
+  buildEffectiveLimitMap,
+  getPersonalCategoryIds,
+  isFutureDate,
+  todayLocalISO,
+  type EffectiveLimit,
+} from "@/lib/rollover";
+import {
+  bulkDeleteExpenses,
+  bulkUpdateExpenses,
+  createExpense,
+  deleteExpense,
+  updateExpense,
+} from "@/app/actions/expenses";
 import {
   createFixedCost,
   deleteFixedCost,
@@ -126,12 +139,37 @@ export default function BudgetApp({
     return m;
   }, [monthExpenses, activeFixed]);
 
-  // Remaining = sum of (limit - spent) across budgeted categories,
-  // clamped at 0 per cat so a maxed-out cat doesn't hide an under-budget
-  // one. Negative on the overall total still shows as "over budget."
+  const personalCatIds = useMemo(
+    () => getPersonalCategoryIds(categories, people),
+    [categories, people]
+  );
+
+  // Personal budgets (named after a person) carry forward surplus/deficit
+  // each month. Everything else: effective = base.
+  const effectiveLimitByCat = useMemo(
+    () =>
+      buildEffectiveLimitMap(
+        budgets,
+        personalCatIds,
+        year,
+        month,
+        expenses,
+        activeFixed
+      ),
+    [budgets, personalCatIds, year, month, expenses, activeFixed]
+  );
+
+  function effectiveOf(catId: number, baseLimit: number): number {
+    return effectiveLimitByCat.get(catId)?.effective ?? baseLimit;
+  }
+
+  // Remaining = sum of (effective limit - spent) across budgeted categories.
+  // Effective limit folds in personal-budget rollover.
   const remaining = budgets.reduce(
     (s, b) =>
-      s + (Number(b.monthly_limit) - (spentByCat.get(b.category_id) ?? 0)),
+      s +
+      (effectiveOf(b.category_id, Number(b.monthly_limit)) -
+        (spentByCat.get(b.category_id) ?? 0)),
     0
   );
 
@@ -213,6 +251,7 @@ export default function BudgetApp({
             budgets={budgets}
             totals={{ totalSpent, totalBudget, totalFixed, remaining }}
             spentByCat={spentByCat}
+            effectiveLimitByCat={effectiveLimitByCat}
             catById={catById}
             peopleById={peopleById}
             onEditExpense={(e) => setEditExpense(e)}
@@ -225,10 +264,24 @@ export default function BudgetApp({
             monthLabel={`${MONTH_NAMES[month]} ${year}`}
             monthExpenses={monthExpenses}
             allExpenses={expenses}
+            categories={categories}
+            people={people}
             catById={catById}
             peopleById={peopleById}
             onAdd={() => setEditExpense("new")}
             onEdit={(e) => setEditExpense(e)}
+            onBulkUpdate={async (ids, patch) => {
+              await bulkUpdateExpenses({ ids, ...patch });
+              setExpenses((prev) =>
+                prev.map((e) =>
+                  ids.includes(e.id) ? { ...e, ...patch } : e
+                )
+              );
+            }}
+            onBulkDelete={async (ids) => {
+              await bulkDeleteExpenses(ids);
+              setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+            }}
           />
         )}
         {tab === "fixed" && (
@@ -245,6 +298,8 @@ export default function BudgetApp({
             categories={categories}
             budgets={budgets}
             spentByCat={spentByCat}
+            effectiveLimitByCat={effectiveLimitByCat}
+            personalCatIds={personalCatIds}
             onCategoryClick={(catId) => setCategoryDrill(catId)}
             onChange={(catId, val) => {
               startTransition(async () => {
@@ -435,8 +490,11 @@ export default function BudgetApp({
           fixedCosts={fixedCosts}
           budgets={budgets}
           spentByCat={spentByCat}
+          effectiveLimitByCat={effectiveLimitByCat}
           catById={catById}
           peopleById={peopleById}
+          categories={categories}
+          people={people}
           totals={{ totalSpent, totalBudget, totalFixed, remaining }}
           onClose={() => setDrill(null)}
           onPickExpense={(e) => {
@@ -451,6 +509,18 @@ export default function BudgetApp({
             setDrill(null);
             setTab("budgets");
           }}
+          onBulkUpdate={async (ids, patch) => {
+            await bulkUpdateExpenses({ ids, ...patch });
+            setExpenses((prev) =>
+              prev.map((e) =>
+                ids.includes(e.id) ? { ...e, ...patch } : e
+              )
+            );
+          }}
+          onBulkDelete={async (ids) => {
+            await bulkDeleteExpenses(ids);
+            setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+          }}
         />
       )}
 
@@ -461,8 +531,11 @@ export default function BudgetApp({
           monthExpenses={monthExpenses}
           fixedCosts={activeFixed}
           budgets={budgets}
+          effectiveLimitByCat={effectiveLimitByCat}
           catById={catById}
           peopleById={peopleById}
+          categories={categories}
+          people={people}
           onClose={() => setCategoryDrill(null)}
           onPickExpense={(e) => {
             setCategoryDrill(null);
@@ -471,6 +544,18 @@ export default function BudgetApp({
           onPickFixed={(f) => {
             setCategoryDrill(null);
             setEditFixed(f);
+          }}
+          onBulkUpdate={async (ids, patch) => {
+            await bulkUpdateExpenses({ ids, ...patch });
+            setExpenses((prev) =>
+              prev.map((e) =>
+                ids.includes(e.id) ? { ...e, ...patch } : e
+              )
+            );
+          }}
+          onBulkDelete={async (ids) => {
+            await bulkDeleteExpenses(ids);
+            setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
           }}
         />
       )}
@@ -640,6 +725,7 @@ function Dashboard({
   budgets,
   totals,
   spentByCat,
+  effectiveLimitByCat,
   catById,
   peopleById,
   onEditExpense,
@@ -659,6 +745,7 @@ function Dashboard({
     remaining: number;
   };
   spentByCat: Map<number, number>;
+  effectiveLimitByCat: Map<number, EffectiveLimit>;
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
   onEditExpense: (e: Expense) => void;
@@ -771,7 +858,10 @@ function Dashboard({
                 const c = catById.get(b.category_id);
                 if (!c) return null;
                 const used = spentByCat.get(b.category_id) ?? 0;
-                const limit = Number(b.monthly_limit);
+                const eff = effectiveLimitByCat.get(b.category_id);
+                const limit = eff?.effective ?? Number(b.monthly_limit);
+                const rollover = eff?.rollover ?? 0;
+                const isPersonal = !!eff?.isPersonal;
                 const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
                 const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
                 return (
@@ -788,6 +878,19 @@ function Dashboard({
                           style={{ background: c.color }}
                         />
                         <span className="truncate">{c.name}</span>
+                        {isPersonal && rollover !== 0 && (
+                          <span
+                            className={`text-[10px] font-bold tabular-nums shrink-0 px-1.5 py-0.5 rounded-full ring-1 ${
+                              rollover > 0
+                                ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                                : "bg-rose-50 text-rose-700 ring-rose-200"
+                            }`}
+                            title="Personal budget rollover"
+                          >
+                            {rollover > 0 ? "+" : ""}
+                            {fmt(rollover)}
+                          </span>
+                        )}
                       </span>
                       <span className="tabular-nums shrink-0">
                         {fmt(used)} / {fmt(limit)}
@@ -914,18 +1017,29 @@ function ExpensesTab({
   monthLabel,
   monthExpenses,
   allExpenses,
+  categories,
+  people,
   catById,
   peopleById,
   onAdd,
   onEdit,
+  onBulkUpdate,
+  onBulkDelete,
 }: {
   monthLabel: string;
   monthExpenses: Expense[];
   allExpenses: Expense[];
+  categories: Category[];
+  people: Person[];
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
   onAdd: () => void;
   onEdit: (e: Expense) => void;
+  onBulkUpdate: (
+    ids: number[],
+    patch: { category_id?: number; date?: string; person_id?: number | null }
+  ) => Promise<void>;
+  onBulkDelete: (ids: number[]) => Promise<void>;
 }) {
   const [dateFilter, setDateFilter] = useState("");
 
@@ -981,18 +1095,17 @@ function ExpensesTab({
             : `No expenses for ${monthLabel}. Tap "Add Expense" to log one.`}
         </div>
       ) : (
-        <div className="space-y-2">
-          {filtered.map((e) => (
-            <ExpenseRow
-              key={e.id}
-              e={e}
-              catById={catById}
-              peopleById={peopleById}
-              onClick={() => onEdit(e)}
-              showDate
-            />
-          ))}
-        </div>
+        <BulkEditableExpenseList
+          expenses={filtered}
+          categories={categories}
+          people={people}
+          catById={catById}
+          peopleById={peopleById}
+          onPickExpense={onEdit}
+          onBulkUpdate={onBulkUpdate}
+          onBulkDelete={onBulkDelete}
+          showDate
+        />
       )}
     </section>
   );
@@ -1100,12 +1213,16 @@ function BudgetsTab({
   categories,
   budgets,
   spentByCat,
+  effectiveLimitByCat,
+  personalCatIds,
   onChange,
   onCategoryClick,
 }: {
   categories: Category[];
   budgets: Budget[];
   spentByCat: Map<number, number>;
+  effectiveLimitByCat: Map<number, EffectiveLimit>;
+  personalCatIds: Set<number>;
   onChange: (categoryId: number, value: number) => void;
   onCategoryClick: (categoryId: number) => void;
 }) {
@@ -1123,14 +1240,19 @@ function BudgetsTab({
       <div>
         <h2 className="text-xl font-bold">Monthly Budgets</h2>
         <p className="text-sm text-gray-600">
-          Each budget carries forward to the next month automatically. Edit any
-          time — the new limit applies immediately. Leave blank to remove.
+          Most budgets reset every month. Budgets named after a person (e.g. a
+          category called <b>Kate</b> or <b>Nick</b>) carry surplus or overspend
+          forward — they roll over and compound. Leave blank to remove.
         </p>
       </div>
       <div className="bg-white rounded-xl shadow-sm divide-y">
         {sorted.map((c) => {
           const b = budgets.find((x) => x.category_id === c.id);
-          const limit = b ? Number(b.monthly_limit) : 0;
+          const baseLimit = b ? Number(b.monthly_limit) : 0;
+          const eff = effectiveLimitByCat.get(c.id);
+          const limit = eff?.effective ?? baseLimit;
+          const rollover = eff?.rollover ?? 0;
+          const isPersonal = personalCatIds.has(c.id);
           const used = spentByCat.get(c.id) ?? 0;
           const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
           const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
@@ -1147,6 +1269,14 @@ function BudgetsTab({
                 >
                   <span className="truncate">{c.name}</span>
                 </button>
+                {isPersonal && (
+                  <span
+                    className="text-[10px] font-bold uppercase tracking-wide text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200 rounded-full px-2 py-0.5 shrink-0"
+                    title="This budget rolls over each month"
+                  >
+                    Rolls over
+                  </span>
+                )}
                 <div className="flex-1" />
                 <div className="flex items-center gap-1">
                   <span className="text-gray-500 text-sm">$</span>
@@ -1154,13 +1284,29 @@ function BudgetsTab({
                     type="number"
                     step="0.01"
                     min="0"
-                    defaultValue={limit > 0 ? limit : ""}
+                    defaultValue={baseLimit > 0 ? baseLimit : ""}
                     onBlur={(e) => onChange(c.id, Number(e.target.value))}
                     className="w-28 border rounded-lg px-2 py-1 text-right tabular-nums"
                     placeholder="0.00"
                   />
                 </div>
               </div>
+              {isPersonal && baseLimit > 0 && rollover !== 0 && (
+                <p className="text-xs tabular-nums text-gray-600">
+                  Base {fmt(baseLimit)} {rollover > 0 ? "+" : "−"}{" "}
+                  <span
+                    className={
+                      rollover > 0
+                        ? "text-emerald-700 font-semibold"
+                        : "text-rose-700 font-semibold"
+                    }
+                  >
+                    {fmt(Math.abs(rollover))}
+                  </span>{" "}
+                  {rollover > 0 ? "rollover" : "from overspend"} ={" "}
+                  <b>{fmt(limit)}</b> available
+                </p>
+              )}
               {limit > 0 && (
                 <button
                   type="button"
@@ -1278,6 +1424,15 @@ function ExpenseDialog({
           const fd = new FormData(ev.currentTarget);
           fd.set("category_id", String(categoryId));
           fd.set("person_id", personId == null ? "" : String(personId));
+          const dateValue = String(fd.get("date") ?? "");
+          if (isFutureDate(dateValue)) {
+            if (
+              !confirm(
+                "You're setting a date in the future. Save this expense for that date?"
+              )
+            )
+              return;
+          }
           await onSave(fd, e?.id);
           onClose();
         }}
@@ -1618,13 +1773,18 @@ function DrillDrawer({
   fixedCosts,
   budgets,
   spentByCat,
+  effectiveLimitByCat,
   catById,
   peopleById,
+  categories,
+  people,
   totals,
   onClose,
   onPickExpense,
   onPickFixed,
   onJumpBudgets,
+  onBulkUpdate,
+  onBulkDelete,
 }: {
   kind: DrillKind;
   monthLabel: string;
@@ -1632,8 +1792,11 @@ function DrillDrawer({
   fixedCosts: FixedCost[];
   budgets: Budget[];
   spentByCat: Map<number, number>;
+  effectiveLimitByCat: Map<number, EffectiveLimit>;
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
+  categories: Category[];
+  people: Person[];
   totals: {
     totalSpent: number;
     totalBudget: number;
@@ -1644,6 +1807,11 @@ function DrillDrawer({
   onPickExpense: (e: Expense) => void;
   onPickFixed: (f: FixedCost) => void;
   onJumpBudgets: () => void;
+  onBulkUpdate: (
+    ids: number[],
+    patch: { category_id?: number; date?: string; person_id?: number | null }
+  ) => Promise<void>;
+  onBulkDelete: (ids: number[]) => Promise<void>;
 }) {
   const title =
     kind === "total"
@@ -1671,6 +1839,15 @@ function DrillDrawer({
         : kind === "fixed"
           ? totals.totalFixed
           : totals.remaining;
+
+  const showBulk = kind === "total" || kind === "variable";
+  const sortedExpenses = useMemo(
+    () =>
+      [...monthExpenses].sort((a, b) =>
+        a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id
+      ),
+    [monthExpenses]
+  );
 
   return (
     <div
@@ -1712,27 +1889,19 @@ function DrillDrawer({
           </div>
         </div>
         <div className="overflow-y-auto p-3 space-y-1">
-          {(kind === "total" || kind === "variable") &&
-            (() => {
-              const sorted = [...monthExpenses].sort((a, b) =>
-                a.date > b.date ? -1 : a.date < b.date ? 1 : b.id - a.id
-              );
-              if (!sorted.length)
-                return (
-                  <p className="p-4 text-sm text-gray-500 text-center">
-                    No expenses yet this month.
-                  </p>
-                );
-              return sorted.map((e) => (
-                <ExpenseRow
-                  key={e.id}
-                  e={e}
-                  catById={catById}
-                  peopleById={peopleById}
-                  onClick={() => onPickExpense(e)}
-                />
-              ));
-            })()}
+          {showBulk && (
+            <BulkEditableExpenseList
+              expenses={sortedExpenses}
+              categories={categories}
+              people={people}
+              catById={catById}
+              peopleById={peopleById}
+              onPickExpense={onPickExpense}
+              onBulkUpdate={onBulkUpdate}
+              onBulkDelete={onBulkDelete}
+              emptyText="No expenses yet this month."
+            />
+          )}
           {kind === "total" && (
             <>
               <p className="px-3 pt-3 pb-1 text-xs uppercase tracking-wide text-gray-500 font-semibold">
@@ -1756,6 +1925,7 @@ function DrillDrawer({
             <RemainingList
               budgets={budgets}
               spentByCat={spentByCat}
+              effectiveLimitByCat={effectiveLimitByCat}
               catById={catById}
               onJump={onJumpBudgets}
             />
@@ -1816,11 +1986,13 @@ function FixedRows({
 function RemainingList({
   budgets,
   spentByCat,
+  effectiveLimitByCat,
   catById,
   onJump,
 }: {
   budgets: Budget[];
   spentByCat: Map<number, number>;
+  effectiveLimitByCat: Map<number, EffectiveLimit>;
   catById: Map<number, Category>;
   onJump: () => void;
 }) {
@@ -1844,7 +2016,10 @@ function RemainingList({
       {budgets.map((b) => {
         const c = catById.get(b.category_id);
         const used = spentByCat.get(b.category_id) ?? 0;
-        const limit = Number(b.monthly_limit);
+        const eff = effectiveLimitByCat.get(b.category_id);
+        const limit = eff?.effective ?? Number(b.monthly_limit);
+        const rollover = eff?.rollover ?? 0;
+        const isPersonal = !!eff?.isPersonal;
         const remaining = limit - used;
         const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
         const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
@@ -1858,6 +2033,19 @@ function RemainingList({
               >
                 <span className="truncate">{c?.name ?? "Unknown"}</span>
               </span>
+              {isPersonal && rollover !== 0 && (
+                <span
+                  className={`text-[10px] font-bold tabular-nums shrink-0 px-1.5 py-0.5 rounded-full ring-1 ${
+                    rollover > 0
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                      : "bg-rose-50 text-rose-700 ring-rose-200"
+                  }`}
+                  title="Rollover from prior months"
+                >
+                  {rollover > 0 ? "+" : ""}
+                  {fmt(rollover)}
+                </span>
+              )}
               <p
                 className={`ml-auto font-semibold tabular-nums shrink-0 ${
                   remaining < 0 ? "text-red-600" : "text-emerald-700"
@@ -1890,22 +2078,35 @@ function CategoryDrawer({
   monthExpenses,
   fixedCosts,
   budgets,
+  effectiveLimitByCat,
   catById,
   peopleById,
+  categories,
+  people,
   onClose,
   onPickExpense,
   onPickFixed,
+  onBulkUpdate,
+  onBulkDelete,
 }: {
   categoryId: number;
   monthLabel: string;
   monthExpenses: Expense[];
   fixedCosts: FixedCost[];
   budgets: Budget[];
+  effectiveLimitByCat: Map<number, EffectiveLimit>;
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
+  categories: Category[];
+  people: Person[];
   onClose: () => void;
   onPickExpense: (e: Expense) => void;
   onPickFixed: (f: FixedCost) => void;
+  onBulkUpdate: (
+    ids: number[],
+    patch: { category_id?: number; date?: string; person_id?: number | null }
+  ) => Promise<void>;
+  onBulkDelete: (ids: number[]) => Promise<void>;
 }) {
   const c = catById.get(categoryId);
   const rows = [...monthExpenses]
@@ -1919,7 +2120,11 @@ function CategoryDrawer({
   );
   const used = variableUsed + billsUsed;
   const budget = budgets.find((b) => b.category_id === categoryId);
-  const limit = budget ? Number(budget.monthly_limit) : 0;
+  const baseLimit = budget ? Number(budget.monthly_limit) : 0;
+  const eff = effectiveLimitByCat.get(categoryId);
+  const limit = eff?.effective ?? baseLimit;
+  const rollover = eff?.rollover ?? 0;
+  const isPersonal = !!eff?.isPersonal;
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const cls = used > limit ? "over" : pct > 80 ? "warn" : "ok";
   const remaining = limit - used;
@@ -1961,6 +2166,24 @@ function CategoryDrawer({
                       ? `${fmt(remaining)} left`
                       : `${fmt(-remaining)} over`}
                   </p>
+                  {isPersonal && rollover !== 0 && (
+                    <p className="text-xs mt-1 tabular-nums">
+                      <span className="text-gray-500">Base {fmt(baseLimit)}</span>{" "}
+                      <span
+                        className={
+                          rollover > 0
+                            ? "text-emerald-700 font-semibold"
+                            : "text-rose-700 font-semibold"
+                        }
+                      >
+                        {rollover > 0 ? "+ " : "− "}
+                        {fmt(Math.abs(rollover))}
+                      </span>{" "}
+                      <span className="text-gray-500">
+                        {rollover > 0 ? "rolled over" : "from overspend"}
+                      </span>
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -2049,21 +2272,437 @@ function CategoryDrawer({
                 No variable expenses this month — only the bills above.
               </p>
             ) : (
-              rows.map((e) => (
-                <ExpenseRow
-                  key={e.id}
-                  e={e}
-                  catById={catById}
-                  peopleById={peopleById}
-                  onClick={() => onPickExpense(e)}
-                  showDate
-                />
-              ))
+              <BulkEditableExpenseList
+                expenses={rows}
+                categories={categories}
+                people={people}
+                catById={catById}
+                peopleById={peopleById}
+                onPickExpense={onPickExpense}
+                onBulkUpdate={onBulkUpdate}
+                onBulkDelete={onBulkDelete}
+                showDate
+              />
             )}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+// =============================================================
+// Bulk edit — works on expense lists wherever they appear
+// =============================================================
+function BulkEditableExpenseList({
+  expenses,
+  categories,
+  people,
+  catById,
+  peopleById,
+  onPickExpense,
+  onBulkUpdate,
+  onBulkDelete,
+  showDate = false,
+  emptyText,
+}: {
+  expenses: Expense[];
+  categories: Category[];
+  people: Person[];
+  catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
+  onPickExpense: (e: Expense) => void;
+  onBulkUpdate: (
+    ids: number[],
+    patch: { category_id?: number; date?: string; person_id?: number | null }
+  ) => Promise<void>;
+  onBulkDelete: (ids: number[]) => Promise<void>;
+  showDate?: boolean;
+  emptyText?: string;
+}) {
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // If the visible list shrinks, drop any IDs that fell out of view.
+  useEffect(() => {
+    if (!selected.size) return;
+    const visible = new Set(expenses.map((e) => e.id));
+    let changed = false;
+    const next = new Set<number>();
+    for (const id of selected) {
+      if (visible.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) setSelected(next);
+  }, [expenses, selected]);
+
+  function toggle(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setSelected(new Set(expenses.map((e) => e.id)));
+  }
+
+  function exitSelect() {
+    setSelectMode(false);
+    setSelected(new Set());
+  }
+
+  if (expenses.length === 0) {
+    return (
+      <p className="p-4 text-sm text-gray-500 text-center">
+        {emptyText ?? "No expenses to show."}
+      </p>
+    );
+  }
+
+  const ids = Array.from(selected);
+  const allSelected = ids.length === expenses.length && expenses.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap text-sm">
+        {!selectMode ? (
+          <button
+            type="button"
+            onClick={() => setSelectMode(true)}
+            className="px-3 py-1.5 rounded-lg font-semibold bg-white ring-1 ring-gray-200 text-gray-700 hover:bg-gray-50"
+          >
+            Bulk edit
+          </button>
+        ) : (
+          <>
+            <span className="font-semibold tabular-nums">
+              {ids.length} selected
+            </span>
+            <button
+              type="button"
+              onClick={allSelected ? () => setSelected(new Set()) : selectAll}
+              className="text-xs underline text-gray-700"
+            >
+              {allSelected ? "Clear all" : "Select all"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              disabled={ids.length === 0 || busy}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white disabled:opacity-50"
+            >
+              Edit fields
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (ids.length === 0) return;
+                if (
+                  !confirm(
+                    `Delete ${ids.length} expense${ids.length === 1 ? "" : "s"}?`
+                  )
+                )
+                  return;
+                setBusy(true);
+                try {
+                  await onBulkDelete(ids);
+                  exitSelect();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              disabled={ids.length === 0 || busy}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 ring-1 ring-rose-200 disabled:opacity-50"
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={exitSelect}
+              className="ml-auto text-xs underline text-gray-500"
+            >
+              Done
+            </button>
+          </>
+        )}
+      </div>
+      <div className="space-y-2">
+        {expenses.map((e) => (
+          <SelectableExpenseRow
+            key={e.id}
+            e={e}
+            catById={catById}
+            peopleById={peopleById}
+            selectMode={selectMode}
+            checked={selected.has(e.id)}
+            onToggle={() => toggle(e.id)}
+            onClick={() => onPickExpense(e)}
+            showDate={showDate}
+          />
+        ))}
+      </div>
+      {editing && (
+        <BulkEditExpenseDialog
+          count={ids.length}
+          categories={categories}
+          people={people}
+          onClose={() => setEditing(false)}
+          onApply={async (patch) => {
+            setBusy(true);
+            try {
+              await onBulkUpdate(ids, patch);
+              exitSelect();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function SelectableExpenseRow({
+  e,
+  catById,
+  peopleById,
+  selectMode,
+  checked,
+  onToggle,
+  onClick,
+  showDate,
+}: {
+  e: Expense;
+  catById: Map<number, Category>;
+  peopleById: Map<number, Person>;
+  selectMode: boolean;
+  checked: boolean;
+  onToggle: () => void;
+  onClick: () => void;
+  showDate: boolean;
+}) {
+  if (!selectMode) {
+    return (
+      <ExpenseRow
+        e={e}
+        catById={catById}
+        peopleById={peopleById}
+        onClick={onClick}
+        showDate={showDate}
+      />
+    );
+  }
+  return (
+    <div className="flex items-stretch gap-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-pressed={checked}
+        aria-label={checked ? "Deselect" : "Select"}
+        className={`shrink-0 w-9 rounded-2xl flex items-center justify-center transition ${
+          checked
+            ? "bg-emerald-500 text-white"
+            : "bg-white text-gray-400 ring-1 ring-gray-200"
+        }`}
+      >
+        {checked ? (
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M5 12l5 5L20 7" />
+          </svg>
+        ) : (
+          <span className="w-4 h-4 rounded-full border-2 border-current" />
+        )}
+      </button>
+      <div className="flex-1">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="w-full text-left"
+        >
+          <ExpenseRow
+            e={e}
+            catById={catById}
+            peopleById={peopleById}
+            showDate={showDate}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BulkEditExpenseDialog({
+  count,
+  categories,
+  people,
+  onClose,
+  onApply,
+}: {
+  count: number;
+  categories: Category[];
+  people: Person[];
+  onClose: () => void;
+  onApply: (patch: {
+    category_id?: number;
+    date?: string;
+    person_id?: number | null;
+  }) => Promise<void>;
+}) {
+  const [applyCategory, setApplyCategory] = useState(false);
+  const [applyDate, setApplyDate] = useState(false);
+  const [applyPerson, setApplyPerson] = useState(false);
+  const [categoryId, setCategoryId] = useState<number>(categories[0]?.id ?? 0);
+  const [date, setDate] = useState(todayLocalISO());
+  const [personId, setPersonId] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const nothingToDo = !applyCategory && !applyDate && !applyPerson;
+
+  return (
+    <DialogShell onClose={onClose}>
+      <h3 className="text-lg font-bold">
+        Edit {count} expense{count === 1 ? "" : "s"}
+      </h3>
+      <p className="text-sm text-gray-600">
+        Tick the field you want to change for all selected expenses.
+      </p>
+      {error && (
+        <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>
+      )}
+      <form
+        onSubmit={async (ev) => {
+          ev.preventDefault();
+          if (nothingToDo) {
+            onClose();
+            return;
+          }
+          if (applyDate && isFutureDate(date)) {
+            if (
+              !confirm(
+                "You're setting a date in the future. Apply this date to all selected expenses?"
+              )
+            )
+              return;
+          }
+          setBusy(true);
+          setError(null);
+          try {
+            const patch: {
+              category_id?: number;
+              date?: string;
+              person_id?: number | null;
+            } = {};
+            if (applyCategory) patch.category_id = categoryId;
+            if (applyDate) patch.date = date;
+            if (applyPerson) patch.person_id = personId;
+            await onApply(patch);
+            onClose();
+          } catch (err) {
+            setError((err as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="space-y-3"
+      >
+        <div className="space-y-2">
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={applyCategory}
+              onChange={(e) => setApplyCategory(e.target.checked)}
+              className="mt-1"
+            />
+            <span className="flex-1">
+              <span className="text-sm font-medium block">Category</span>
+              {applyCategory && (
+                <CategoryPicker
+                  value={categoryId}
+                  categories={categories}
+                  onChange={setCategoryId}
+                  className="mt-1"
+                />
+              )}
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={applyDate}
+              onChange={(e) => setApplyDate(e.target.checked)}
+              className="mt-1"
+            />
+            <span className="flex-1">
+              <span className="text-sm font-medium block">Date</span>
+              {applyDate && (
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                  required
+                />
+              )}
+            </span>
+          </label>
+          {people.length > 0 && (
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={applyPerson}
+                onChange={(e) => setApplyPerson(e.target.checked)}
+                className="mt-1"
+              />
+              <span className="flex-1">
+                <span className="text-sm font-medium block">Person</span>
+                {applyPerson && (
+                  <PersonSelector
+                    people={people}
+                    value={personId}
+                    onChange={setPersonId}
+                    className="mt-1"
+                  />
+                )}
+              </span>
+            </label>
+          )}
+        </div>
+        <div className="flex justify-between pt-2">
+          <span />
+          <div className="ml-auto flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy || nothingToDo}
+              className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold disabled:opacity-50"
+            >
+              {busy ? "Saving…" : `Apply to ${count}`}
+            </button>
+          </div>
+        </div>
+      </form>
+    </DialogShell>
   );
 }
 

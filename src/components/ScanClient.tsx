@@ -6,6 +6,7 @@ import { useMemo, useRef, useState } from "react";
 import { fmt } from "@/lib/money";
 import { compressImage } from "@/lib/image";
 import type { Category, Person, ScanResult } from "@/lib/types";
+import { isFutureDate, todayLocalISO } from "@/lib/rollover";
 import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
 import CategoryPicker from "./CategoryPicker";
 import PersonSelector from "./PersonSelector";
@@ -92,6 +93,9 @@ export default function ScanClient({
   const [activeIdx, setActiveIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [personId, setPersonId] = useState<number | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkPicked, setBulkPicked] = useState<Set<number>>(new Set());
+  const [bulkEditing, setBulkEditing] = useState(false);
 
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
@@ -196,6 +200,14 @@ export default function ScanClient({
 
   async function saveCurrent() {
     if (!review) return;
+    if (isFutureDate(review.date)) {
+      if (
+        !confirm(
+          `You're setting a date in the future (${review.date}). The receipt will be filed for that date — save anyway?`
+        )
+      )
+        return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -294,6 +306,43 @@ export default function ScanClient({
     setReviews((prev) =>
       prev.map((r, ri) => (ri === activeIdx ? { ...r, ...patch } : r))
     );
+  }
+
+  function exitBulk() {
+    setBulkMode(false);
+    setBulkPicked(new Set());
+  }
+
+  function applyBulkPatch(patch: {
+    category_id?: number;
+    date?: string;
+    gst_taxable?: boolean;
+    pst_taxable?: boolean;
+  }) {
+    setReviews((prev) =>
+      prev.map((r, ri) => {
+        if (ri !== activeIdx) return r;
+        return {
+          ...r,
+          lines: r.lines.map((l, j) => {
+            if (!bulkPicked.has(j)) return l;
+            const next = { ...l, ...patch };
+            const gstActive = next.gst_taxable
+              ? Number(next.gst_share) || 0
+              : 0;
+            const pstActive = next.pst_taxable
+              ? Number(next.pst_share) || 0
+              : 0;
+            next.amount =
+              Math.round(
+                (Number(next.base_amount) + gstActive + pstActive) * 100
+              ) / 100;
+            return next;
+          }),
+        };
+      })
+    );
+    exitBulk();
   }
 
   // Derived per-receipt totals from the line items (for display when
@@ -582,6 +631,56 @@ export default function ScanClient({
             </div>
           </div>
 
+          {review.lines.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap text-sm">
+              {!bulkMode ? (
+                <button
+                  type="button"
+                  onClick={() => setBulkMode(true)}
+                  className="px-3 py-1.5 rounded-lg font-semibold bg-white ring-1 ring-gray-200 text-gray-700 hover:bg-gray-50"
+                >
+                  Bulk edit
+                </button>
+              ) : (
+                <>
+                  <span className="font-semibold tabular-nums">
+                    {bulkPicked.size} picked
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBulkPicked(
+                        bulkPicked.size === review.lines.length
+                          ? new Set()
+                          : new Set(review.lines.map((_, i) => i))
+                      )
+                    }
+                    className="text-xs underline text-gray-700"
+                  >
+                    {bulkPicked.size === review.lines.length
+                      ? "Clear all"
+                      : "Pick all"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBulkEditing(true)}
+                    disabled={bulkPicked.size === 0}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white disabled:opacity-50"
+                  >
+                    Edit fields
+                  </button>
+                  <button
+                    type="button"
+                    onClick={exitBulk}
+                    className="ml-auto text-xs underline text-gray-500"
+                  >
+                    Done
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2">
             {review.lines.map((l, i) => {
               const taxOn =
@@ -590,16 +689,53 @@ export default function ScanClient({
               const taxTotal =
                 (l.gst_taxable ? Number(l.gst_share || 0) : 0) +
                 (l.pst_taxable ? Number(l.pst_share || 0) : 0);
+              const bulkChecked = bulkPicked.has(i);
               return (
                 <div
                   key={i}
                   className={`relative bg-white rounded-2xl ring-1 transition shadow-sm ${
-                    l.selected
-                      ? "ring-emerald-100"
-                      : "ring-gray-200 opacity-70"
+                    bulkMode && bulkChecked
+                      ? "ring-violet-300 ring-2"
+                      : l.selected
+                        ? "ring-emerald-100"
+                        : "ring-gray-200 opacity-70"
                   }`}
                 >
                   <div className="p-3 flex items-start gap-3">
+                    {bulkMode && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBulkPicked((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(i)) next.delete(i);
+                            else next.add(i);
+                            return next;
+                          })
+                        }
+                        aria-label={bulkChecked ? "Unpick" : "Pick"}
+                        className={`shrink-0 mt-1 w-7 h-7 rounded-md inline-flex items-center justify-center transition ${
+                          bulkChecked
+                            ? "bg-violet-600 text-white"
+                            : "bg-white ring-2 ring-violet-300 text-violet-300"
+                        }`}
+                      >
+                        {bulkChecked && (
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M5 12l5 5L20 7" />
+                          </svg>
+                        )}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => updateLine(i, { selected: !l.selected })}
@@ -766,6 +902,20 @@ export default function ScanClient({
         </div>
       )}
 
+      {bulkEditing && review && (
+        <ScanLineBulkEditDialog
+          count={bulkPicked.size}
+          categories={categories}
+          defaultDate={review.date}
+          onClose={() => setBulkEditing(false)}
+          onApply={(patch) => {
+            applyBulkPatch(patch);
+            setBulkEditing(false);
+          }}
+          onCategoryCreated={(c) => setCategories((prev) => [...prev, c])}
+        />
+      )}
+
       {review && (
         <div
           className="fixed inset-x-0 bottom-0 z-30 px-4 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] pt-3 bg-gradient-to-t from-white via-white/95 to-transparent"
@@ -805,6 +955,176 @@ export default function ScanClient({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ScanLineBulkEditDialog({
+  count,
+  categories,
+  defaultDate,
+  onClose,
+  onApply,
+  onCategoryCreated,
+}: {
+  count: number;
+  categories: Category[];
+  defaultDate: string;
+  onClose: () => void;
+  onApply: (patch: {
+    category_id?: number;
+    date?: string;
+    gst_taxable?: boolean;
+    pst_taxable?: boolean;
+  }) => void;
+  onCategoryCreated?: (c: Category) => void;
+}) {
+  const [applyCat, setApplyCat] = useState(false);
+  const [applyDate, setApplyDate] = useState(false);
+  const [applyTax, setApplyTax] = useState(false);
+  const [categoryId, setCategoryId] = useState<number>(categories[0]?.id ?? 0);
+  const [date, setDate] = useState(defaultDate || todayLocalISO());
+  const [gst, setGst] = useState(true);
+  const [pst, setPst] = useState(true);
+  const nothingToDo = !applyCat && !applyDate && !applyTax;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white rounded-xl p-5 w-full max-w-md space-y-3">
+        <h3 className="text-lg font-bold">
+          Edit {count} item{count === 1 ? "" : "s"}
+        </h3>
+        <p className="text-sm text-gray-600">
+          Tick the field you want to apply to all picked rows.
+        </p>
+        <form
+          onSubmit={(ev) => {
+            ev.preventDefault();
+            if (nothingToDo) {
+              onClose();
+              return;
+            }
+            if (applyDate && isFutureDate(date)) {
+              if (
+                !confirm(
+                  "You're setting a date in the future. Apply this date to picked items?"
+                )
+              )
+                return;
+            }
+            const patch: {
+              category_id?: number;
+              date?: string;
+              gst_taxable?: boolean;
+              pst_taxable?: boolean;
+            } = {};
+            if (applyCat) patch.category_id = categoryId;
+            if (applyDate) patch.date = date;
+            if (applyTax) {
+              patch.gst_taxable = gst;
+              patch.pst_taxable = pst;
+            }
+            onApply(patch);
+          }}
+          className="space-y-3"
+        >
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={applyCat}
+              onChange={(e) => setApplyCat(e.target.checked)}
+              className="mt-1"
+            />
+            <span className="flex-1">
+              <span className="text-sm font-medium block">Category</span>
+              {applyCat && (
+                <CategoryPicker
+                  value={categoryId}
+                  categories={categories}
+                  onChange={setCategoryId}
+                  onCreated={(c) => {
+                    onCategoryCreated?.(c);
+                    setCategoryId(c.id);
+                  }}
+                  className="mt-1"
+                />
+              )}
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={applyDate}
+              onChange={(e) => setApplyDate(e.target.checked)}
+              className="mt-1"
+            />
+            <span className="flex-1">
+              <span className="text-sm font-medium block">Date</span>
+              {applyDate && (
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                  required
+                />
+              )}
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={applyTax}
+              onChange={(e) => setApplyTax(e.target.checked)}
+              className="mt-1"
+            />
+            <span className="flex-1">
+              <span className="text-sm font-medium block">Tax flags</span>
+              {applyTax && (
+                <div className="flex gap-3 mt-1 text-sm">
+                  <label className="inline-flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={gst}
+                      onChange={(e) => setGst(e.target.checked)}
+                    />
+                    GST
+                  </label>
+                  <label className="inline-flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={pst}
+                      onChange={(e) => setPst(e.target.checked)}
+                    />
+                    PST
+                  </label>
+                </div>
+              )}
+            </span>
+          </label>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={nothingToDo}
+              className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold disabled:opacity-50"
+            >
+              Apply to {count}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

@@ -81,3 +81,50 @@ export async function deleteExpense(id: number) {
   if (error) throw error;
   revalidatePath("/");
 }
+
+const BulkPatch = z.object({
+  ids: z.array(z.coerce.number().int().positive()).min(1),
+  category_id: z.coerce.number().int().positive().optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  person_id: z
+    .preprocess(
+      (v) => (v === "" || v === undefined ? undefined : v),
+      z.union([z.coerce.number().int().positive(), z.null()])
+    )
+    .optional(),
+  notes: z.string().optional(),
+});
+
+export async function bulkUpdateExpenses(input: z.input<typeof BulkPatch>) {
+  const { supabase, user } = await getUserOrThrow();
+  const parsed = BulkPatch.parse(input);
+  const { ids, ...patch } = parsed;
+  if (Object.keys(patch).length === 0) return { ok: true, updated: 0 };
+  const { error } = await supabase
+    .from("expenses")
+    .update(patch)
+    .in("id", ids)
+    .eq("user_id", user.id);
+  if (error) throw error;
+  revalidatePath("/");
+  return { ok: true, updated: ids.length };
+}
+
+export async function bulkDeleteExpenses(ids: number[]) {
+  const { supabase, user } = await getUserOrThrow();
+  const cleaned = ids
+    .map((n) => Number(n))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (cleaned.length === 0) return { ok: true, deleted: 0 };
+  const { error } = await supabase
+    .from("expenses")
+    .delete()
+    .in("id", cleaned)
+    .eq("user_id", user.id);
+  if (error) throw error;
+  revalidatePath("/");
+  return { ok: true, deleted: cleaned.length };
+}
