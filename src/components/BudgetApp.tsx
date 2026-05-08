@@ -339,7 +339,7 @@ export default function BudgetApp({
           <CategoriesTab
             categories={categories}
             onAdd={() => setEditCategory("new")}
-            onEdit={(c) => setEditCategory(c)}
+            onEdit={(c) => setCategoryDrill(c.id)}
           />
         )}
       </main>
@@ -558,6 +558,65 @@ export default function BudgetApp({
           onBulkDelete={async (ids) => {
             await bulkDeleteExpenses(ids);
             setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+          }}
+          onSaveCategory={async (id, patch) => {
+            const fd = new FormData();
+            fd.set("name", patch.name);
+            fd.set("color", patch.color);
+            const existing = catById.get(id);
+            fd.set("icon", existing?.icon ?? "🏷️");
+            await updateCategory(id, fd);
+            setCategories((prev) =>
+              prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+            );
+          }}
+          onDeleteCategory={async (id) => {
+            await deleteCategory(id);
+            setCategories((prev) => prev.filter((c) => c.id !== id));
+          }}
+          onSaveBudget={async (catId, settings) => {
+            await setBudget({
+              category_id: catId,
+              monthly_limit: settings.monthly_limit,
+              rolls_over: settings.rolls_over,
+              is_personal: settings.is_personal,
+              person_name: settings.person_name,
+            });
+            setBudgets((prev) => {
+              const i = prev.findIndex((b) => b.category_id === catId);
+              if (!settings.monthly_limit || settings.monthly_limit <= 0) {
+                if (i >= 0) {
+                  const next = [...prev];
+                  next.splice(i, 1);
+                  return next;
+                }
+                return prev;
+              }
+              const merged = {
+                monthly_limit: settings.monthly_limit,
+                rolls_over: settings.rolls_over,
+                is_personal: settings.is_personal,
+                person_name: settings.is_personal
+                  ? (settings.person_name ?? null)
+                  : null,
+              };
+              if (i >= 0) {
+                const next = [...prev];
+                next[i] = { ...next[i], ...merged };
+                return next;
+              }
+              const today = new Date().toISOString();
+              return [
+                ...prev,
+                {
+                  id: -Date.now(),
+                  user_id: "",
+                  category_id: catId,
+                  created_at: today,
+                  ...merged,
+                },
+              ];
+            });
           }}
         />
       )}
@@ -1550,6 +1609,178 @@ function ToggleRow({
   );
 }
 
+// Combined editor for the category drill-down: name, color, budget
+// limit, personal toggle, rollover toggle, plus delete. Used from the
+// CategoryDrawer's Edit button.
+function CategoryFullEditDialog({
+  category,
+  budget,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  category: Category;
+  budget: Budget | null;
+  onClose: () => void;
+  onSave: (changes: {
+    category: { name: string; color: string };
+    budget: BudgetSettings;
+  }) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  const [name, setName] = useState(category.name);
+  const [color, setColor] = useState(category.color);
+  const [limit, setLimit] = useState<string>(
+    budget && Number(budget.monthly_limit) > 0
+      ? String(Number(budget.monthly_limit))
+      : ""
+  );
+  const [rollsOver, setRollsOver] = useState(!!budget?.rolls_over);
+  const [isPersonal, setIsPersonal] = useState(!!budget?.is_personal);
+  const [personName, setPersonName] = useState(budget?.person_name ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <DialogShell onClose={onClose}>
+      <h3 className="text-lg font-bold">Edit category</h3>
+      {error && (
+        <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>
+      )}
+      <form
+        onSubmit={async (ev) => {
+          ev.preventDefault();
+          if (!name.trim()) {
+            setError("Name is required.");
+            return;
+          }
+          setBusy(true);
+          setError(null);
+          try {
+            const value = Number(limit);
+            await onSave({
+              category: { name: name.trim(), color },
+              budget: {
+                monthly_limit: Number.isFinite(value) ? value : 0,
+                rolls_over: rollsOver,
+                is_personal: isPersonal,
+                person_name: isPersonal ? personName.trim() || null : null,
+              },
+            });
+          } catch (err) {
+            setError((err as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="space-y-3"
+      >
+        <Field label="Name">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            className="w-full border rounded-lg px-3 py-2 mt-1"
+          />
+        </Field>
+        <Field label="Color">
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="w-full border rounded-lg h-10 mt-1"
+          />
+        </Field>
+        <Field label="Monthly budget ($)">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder="0.00 (leave blank for no budget)"
+            className="w-full border rounded-lg px-3 py-2 mt-1 tabular-nums"
+          />
+        </Field>
+
+        <ToggleRow
+          label="Is this a personal budget?"
+          description="Mark this category as belonging to one person."
+          checked={isPersonal}
+          onChange={setIsPersonal}
+        />
+        {isPersonal && (
+          <Field label="Whose budget is it?">
+            <input
+              type="text"
+              value={personName}
+              onChange={(e) => setPersonName(e.target.value)}
+              placeholder="e.g. Eric, Nick, Kate"
+              maxLength={60}
+              className="w-full border rounded-lg px-3 py-2 mt-1"
+            />
+          </Field>
+        )}
+
+        <ToggleRow
+          label="Roll over unused balance?"
+          description="Surplus carries forward; overspending deducts from next month. Compounds indefinitely."
+          checked={rollsOver}
+          onChange={setRollsOver}
+        />
+
+        <div className="flex justify-between pt-2">
+          {!category.is_default ? (
+            <button
+              type="button"
+              onClick={async () => {
+                if (
+                  !confirm(
+                    `Delete "${category.name}"? This only works if no expenses or bills use it.`
+                  )
+                )
+                  return;
+                setBusy(true);
+                setError(null);
+                try {
+                  await onDelete();
+                } catch (err) {
+                  setError((err as Error).message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              disabled={busy}
+              className="text-red-600 text-sm font-semibold"
+            >
+              Delete category
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="ml-auto flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold disabled:opacity-50"
+            >
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </DialogShell>
+  );
+}
+
 function CategoriesTab({
   categories,
   onAdd,
@@ -2292,6 +2523,9 @@ function CategoryDrawer({
   onPickFixed,
   onBulkUpdate,
   onBulkDelete,
+  onSaveCategory,
+  onDeleteCategory,
+  onSaveBudget,
 }: {
   categoryId: number;
   monthLabel: string;
@@ -2311,7 +2545,17 @@ function CategoryDrawer({
     patch: { category_id?: number; date?: string; person_id?: number | null }
   ) => Promise<void>;
   onBulkDelete: (ids: number[]) => Promise<void>;
+  onSaveCategory: (
+    id: number,
+    patch: { name: string; color: string }
+  ) => Promise<void>;
+  onDeleteCategory: (id: number) => Promise<void>;
+  onSaveBudget: (
+    categoryId: number,
+    settings: BudgetSettings
+  ) => Promise<void>;
 }) {
+  const [editing, setEditing] = useState(false);
   const c = catById.get(categoryId);
   const rows = [...monthExpenses]
     .filter((e) => e.category_id === categoryId)
@@ -2391,24 +2635,48 @@ function CategoryDrawer({
                 </>
               )}
             </div>
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="text-gray-400 hover:text-gray-700 inline-flex"
-            >
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            <div className="flex items-start gap-1.5 shrink-0">
+              {c && (
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                  </svg>
+                  Edit
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                aria-label="Close"
+                className="text-gray-400 hover:text-gray-700 inline-flex p-0.5"
               >
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
         <div className="overflow-y-auto p-3 bg-gray-50 space-y-4">
@@ -2491,6 +2759,28 @@ function CategoryDrawer({
           </div>
         </div>
       </div>
+
+      {editing && c && (
+        <CategoryFullEditDialog
+          category={c}
+          budget={budget ?? null}
+          onClose={() => setEditing(false)}
+          onSave={async ({ category, budget: budgetSettings }) => {
+            await onSaveCategory(c.id, category);
+            await onSaveBudget(c.id, budgetSettings);
+            setEditing(false);
+          }}
+          onDelete={async () => {
+            try {
+              await onDeleteCategory(c.id);
+              setEditing(false);
+              onClose();
+            } catch (err) {
+              alert((err as Error).message);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
