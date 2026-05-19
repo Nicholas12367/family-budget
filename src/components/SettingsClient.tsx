@@ -13,6 +13,67 @@ type Snapshot = {
   budgets: Budget[];
 };
 
+type Format = "excel" | "pdf" | "json";
+
+type Preset = "this_month" | "last_month" | "ytd" | "all" | "custom";
+
+const PRESETS: { id: Preset; label: string }[] = [
+  { id: "this_month", label: "This month" },
+  { id: "last_month", label: "Last month" },
+  { id: "ytd", label: "Year-to-date" },
+  { id: "all", label: "All time" },
+  { id: "custom", label: "Custom" },
+];
+
+function rangeForPreset(preset: Preset): { start: string | null; end: string | null } {
+  const now = new Date();
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  if (preset === "this_month") {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return { start: iso(start), end: iso(end) };
+  }
+  if (preset === "last_month") {
+    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const end = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { start: iso(start), end: iso(end) };
+  }
+  if (preset === "ytd") {
+    const start = new Date(now.getFullYear(), 0, 1);
+    return { start: iso(start), end: iso(now) };
+  }
+  return { start: null, end: null };
+}
+
+function filterSnapshot(
+  base: Snapshot & { email: string },
+  start: string | null,
+  end: string | null
+): ExportSnapshot {
+  if (!start && !end) {
+    return {
+      email: base.email,
+      categories: base.categories,
+      expenses: base.expenses,
+      fixedCosts: base.fixedCosts,
+      budgets: base.budgets,
+    };
+  }
+  const inRange = (date: string) => {
+    if (!date) return false;
+    if (start && date < start) return false;
+    if (end && date > end) return false;
+    return true;
+  };
+  return {
+    email: base.email,
+    categories: base.categories,
+    fixedCosts: base.fixedCosts,
+    budgets: base.budgets,
+    expenses: base.expenses.filter((e) => inRange(e.date)),
+  };
+}
+
 export default function SettingsClient({
   email,
   snapshot,
@@ -21,28 +82,43 @@ export default function SettingsClient({
   snapshot: Snapshot;
 }) {
   const [exportToast, setExportToast] = useState<string | null>(null);
+  const [exportDialog, setExportDialog] = useState<Format | null>(null);
 
   function flash(msg: string) {
     setExportToast(msg);
     setTimeout(() => setExportToast(null), 4000);
   }
 
-  function exportJson() {
-    const payload = {
-      email,
-      exportedAt: new Date().toISOString(),
-      ...snapshot,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `family-budget-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    flash("JSON downloaded.");
+  function runExport(format: Format, start: string | null, end: string | null) {
+    const filtered = filterSnapshot({ email, ...snapshot }, start, end);
+    if (format === "json") {
+      const payload = {
+        email,
+        exportedAt: new Date().toISOString(),
+        range: { start, end },
+        categories: filtered.categories,
+        expenses: filtered.expenses,
+        fixedCosts: filtered.fixedCosts,
+        budgets: filtered.budgets,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `family-budget-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      flash(`JSON downloaded · ${filtered.expenses.length} expenses.`);
+    } else if (format === "excel") {
+      exportExcel(filtered);
+      flash(`Excel downloaded · ${filtered.expenses.length} expenses.`);
+    } else if (format === "pdf") {
+      exportPdf(filtered);
+      flash("PDF opened in a new tab — save as PDF in print dialog.");
+    }
+    setExportDialog(null);
   }
 
   return (
@@ -67,21 +143,12 @@ export default function SettingsClient({
       <section className="bg-white rounded-xl shadow-sm p-4 space-y-3">
         <h2 className="font-semibold">Export your data</h2>
         <p className="text-sm text-gray-600">
-          Download a snapshot in your preferred format.
+          Pick a date range when you click an export — get a report for a
+          specific month, year-to-date, or all time.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <button
-            onClick={() => {
-              const s: ExportSnapshot = {
-                email,
-                categories: snapshot.categories,
-                expenses: snapshot.expenses,
-                fixedCosts: snapshot.fixedCosts,
-                budgets: snapshot.budgets,
-              };
-              exportExcel(s);
-              flash("Excel downloaded. You can keep using the app below.");
-            }}
+            onClick={() => setExportDialog("excel")}
             className="px-4 py-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-semibold hover:bg-emerald-100 ring-1 ring-emerald-100 text-left"
           >
             <div className="flex items-center gap-2 text-base">
@@ -93,17 +160,7 @@ export default function SettingsClient({
             </div>
           </button>
           <button
-            onClick={() => {
-              const s: ExportSnapshot = {
-                email,
-                categories: snapshot.categories,
-                expenses: snapshot.expenses,
-                fixedCosts: snapshot.fixedCosts,
-                budgets: snapshot.budgets,
-              };
-              exportPdf(s);
-              flash("PDF opened in a new tab — close it to return here.");
-            }}
+            onClick={() => setExportDialog("pdf")}
             className="px-4 py-3 rounded-xl bg-rose-50 text-rose-700 text-sm font-semibold hover:bg-rose-100 ring-1 ring-rose-100 text-left"
           >
             <div className="flex items-center gap-2 text-base">
@@ -115,7 +172,7 @@ export default function SettingsClient({
             </div>
           </button>
           <button
-            onClick={exportJson}
+            onClick={() => setExportDialog("json")}
             className="px-4 py-3 rounded-xl bg-gray-50 text-gray-700 text-sm font-semibold hover:bg-gray-100 ring-1 ring-gray-100 text-left"
           >
             <div className="flex items-center gap-2 text-base">
@@ -140,6 +197,132 @@ export default function SettingsClient({
           </li>
         </ul>
       </section>
+
+      {exportDialog && (
+        <ExportDialog
+          format={exportDialog}
+          onCancel={() => setExportDialog(null)}
+          onExport={runExport}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExportDialog({
+  format,
+  onCancel,
+  onExport,
+}: {
+  format: Format;
+  onCancel: () => void;
+  onExport: (
+    format: Format,
+    start: string | null,
+    end: string | null
+  ) => void;
+}) {
+  const [preset, setPreset] = useState<Preset>("this_month");
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+    .toISOString()
+    .slice(0, 10);
+  const [customStart, setCustomStart] = useState(monthStart);
+  const [customEnd, setCustomEnd] = useState(todayISO);
+
+  function generate() {
+    if (preset === "custom") {
+      onExport(format, customStart || null, customEnd || null);
+    } else {
+      const r = rangeForPreset(preset);
+      onExport(format, r.start, r.end);
+    }
+  }
+
+  const formatLabel =
+    format === "excel" ? "Excel" : format === "pdf" ? "PDF" : "JSON";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div
+        className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-xl p-5 space-y-3"
+        style={{
+          paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))",
+        }}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-lg">Export as {formatLabel}</h3>
+          <button
+            onClick={onCancel}
+            className="text-gray-400 hover:text-gray-600 text-xl"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <p className="text-sm text-gray-600">Pick a date range.</p>
+        <div className="flex flex-wrap gap-2">
+          {PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setPreset(p.id)}
+              className={`px-3 py-1.5 rounded-full text-sm font-semibold ring-1 transition ${
+                preset === p.id
+                  ? "bg-emerald-600 text-white ring-emerald-600"
+                  : "bg-white text-gray-700 ring-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {preset === "custom" && (
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                Start
+              </label>
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-lg ring-1 ring-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-400 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                End
+              </label>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-lg ring-1 ring-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-400 text-sm"
+              />
+            </div>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={generate}
+            className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700"
+          >
+            Generate
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

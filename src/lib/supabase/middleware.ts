@@ -17,7 +17,7 @@ const PUBLIC_PATHS = [
 // and the owner-only admin dashboard).
 const SUBSCRIPTION_BYPASS_PATHS = [
   "/billing",
-  "/admin",
+  "/nicholas-x7k2qz9j",
   "/api/stripe/webhook",
   "/api/stripe/portal",
   "/api/stripe/checkout-redirect",

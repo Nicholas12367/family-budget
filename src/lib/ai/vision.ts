@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ScanResult } from "@/lib/types";
+import { logScan, type ScanLogStatus } from "./scan-log";
 
 const ScanSchema = z.object({
   merchant: z.string().default(""),
@@ -100,11 +101,41 @@ const TIMEOUT_MS = 55_000;
 export async function scanReceipt(
   imageBase64: string,
   mimeType: string,
-  categoryNames: string[]
+  categoryNames: string[],
+  userId: string | null = null,
+  requestHash: string | null = null
 ): Promise<ScanResult> {
+  const startedAt = Date.now();
+  const bytesIn = imageBase64.length;
+  let httpStatus: number | null = null;
+  let logStatus: ScanLogStatus = "ok";
+  let logErrorCode: string | null = null;
+  let logErrorMessage: string | null = null;
+
+  const finishLog = () => {
+    void logScan({
+      userId,
+      status: logStatus,
+      httpStatus,
+      durationMs: Date.now() - startedAt,
+      bytesIn,
+      errorCode: logErrorCode,
+      errorMessage: logErrorMessage,
+      requestHash,
+    });
+  };
+
+  const fail = (message: string, status: ScanLogStatus = "error"): never => {
+    logStatus = status;
+    logErrorMessage = message;
+    finishLog();
+    throw new Error(message);
+  };
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error(
+    logErrorCode = "no_api_key";
+    fail(
       "Receipt scanning isn't configured on the server (GEMINI_API_KEY missing). Contact support."
     );
   }
@@ -140,16 +171,23 @@ export async function scanReceipt(
     });
   } catch (e) {
     if ((e as { name?: string }).name === "AbortError") {
-      throw new Error(
-        "The receipt scan took too long (over 55 seconds). The photo may be very large or the AI service is slow — try again, or use a clearer/cropped photo."
+      logErrorCode = "timeout";
+      fail(
+        "The receipt scan took too long (over 55 seconds). The photo may be very large or the AI service is slow — try again, or use a clearer/cropped photo.",
+        "timeout"
       );
     }
-    throw new Error(
+    logErrorCode = "fetch_failed";
+    fail(
       "Couldn't reach the receipt scanning service. Check your connection and try again."
     );
+    // unreachable — fail throws
+    return undefined as never;
   } finally {
     clearTimeout(timeoutId);
   }
+
+  httpStatus = res.status;
 
   if (!res.ok) {
     let detail = "";
@@ -164,27 +202,28 @@ export async function scanReceipt(
         detail = "";
       }
     }
+    logErrorMessage = detail;
+    logErrorCode = `http_${res.status}`;
     if (res.status === 400 && /image|inline|mime|format/i.test(detail)) {
-      throw new Error(
+      fail(
         "The AI couldn't read this image format. Try a JPEG or PNG photo of the receipt."
       );
     }
     if (res.status === 413) {
-      throw new Error(
+      fail(
         "The receipt photo is too large for the AI. Take a tighter shot of just the receipt."
       );
     }
     if (res.status === 429) {
-      throw new Error(
-        "Receipt scanning is rate-limited right now. Wait a minute and try again."
+      fail(
+        "Receipt scanning is rate-limited right now. Wait a minute and try again.",
+        "rate_limited"
       );
     }
     if (res.status >= 500) {
-      throw new Error(
-        "The AI service is temporarily unavailable. Try again in a moment."
-      );
+      fail("The AI service is temporarily unavailable. Try again in a moment.");
     }
-    throw new Error(
+    fail(
       `Receipt scan failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ""}`
     );
   }
@@ -193,32 +232,34 @@ export async function scanReceipt(
   try {
     data = await res.json();
   } catch {
-    throw new Error(
-      "The AI returned a malformed response. Try retaking the photo."
-    );
+    logErrorCode = "bad_json";
+    fail("The AI returned a malformed response. Try retaking the photo.");
   }
   const text = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })
     ?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    throw new Error(
+    logErrorCode = "empty_response";
+    fail(
       "The AI couldn't extract any items from this photo. Make sure the receipt is in focus, well-lit, and not cut off."
     );
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(text!);
   } catch {
-    const match = text.match(/\{[\s\S]*\}/);
+    const match = text!.match(/\{[\s\S]*\}/);
     if (!match) {
-      throw new Error(
+      logErrorCode = "no_json_in_text";
+      fail(
         "The AI didn't return structured data for this receipt. Try a clearer photo."
       );
     }
     try {
-      parsed = JSON.parse(match[0]);
+      parsed = JSON.parse(match![0]);
     } catch {
-      throw new Error(
+      logErrorCode = "parse_failed";
+      fail(
         "Couldn't parse the receipt data. Try a clearer photo or retake."
       );
     }
@@ -228,26 +269,33 @@ export async function scanReceipt(
   try {
     result = ScanSchema.parse(parsed);
   } catch {
-    throw new Error(
+    logErrorCode = "schema_mismatch";
+    fail(
       "The AI's response didn't match the expected receipt format. Try a clearer photo of the full receipt."
     );
   }
-  if (!result.date || !/^\d{4}-\d{2}-\d{2}$/.test(result.date)) {
-    result.date = new Date().toISOString().slice(0, 10);
-  }
+  // Receipt date policy: ALWAYS use today (the scan day), never the date
+  // printed on the receipt. Gemini misreads dates often enough (faint
+  // ink, ambiguous formats like 5/26/13, locale differences) that
+  // trusting the printed date causes more pain than it's worth. The
+  // scan-review UI shows a big, obvious "Edit date" control so the user
+  // can override per-receipt if they're logging an older purchase.
+  // The client overrides this again with the user's local-tz date so
+  // a server in UTC doesn't push midnight scans into the next day.
+  result!.date = new Date().toISOString().slice(0, 10);
 
   // Back-compat: if Gemini returned `total` but not `grand_total`, copy it.
-  if (!result.grand_total && result.total) {
-    result.grand_total = result.total;
+  if (!result!.grand_total && result!.total) {
+    result!.grand_total = result!.total;
   }
-  if (!result.total && result.grand_total) {
-    result.total = result.grand_total;
+  if (!result!.total && result!.grand_total) {
+    result!.total = result!.grand_total;
   }
 
   // Back-compat for line items: if base_amount is 0 but legacy `amount`
   // was returned, treat that as the line amount and zero out tax flags
   // (we won't be able to distinguish, but at least sums work).
-  result.line_items = result.line_items.map((li) => ({
+  result!.line_items = result!.line_items.map((li) => ({
     ...li,
     base_amount:
       li.base_amount > 0 || li.base_amount < 0
@@ -255,5 +303,6 @@ export async function scanReceipt(
         : li.amount ?? 0,
   }));
 
-  return result;
+  finishLog();
+  return result!;
 }

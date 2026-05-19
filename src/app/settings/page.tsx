@@ -3,8 +3,11 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import SettingsClient from "@/components/SettingsClient";
 import PeopleManager from "@/components/PeopleManager";
+import BugReportButton from "@/components/BugReportButton";
+import WidgetsPanel from "@/components/WidgetsPanel";
 import { listPeople } from "@/app/actions/people";
 import { readSub, isAllowed } from "@/lib/subscription";
+import { normalizeLayout } from "@/lib/widgets";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +24,7 @@ export default async function SettingsPage() {
     { data: fixedCosts = [] },
     { data: budgets = [] },
     people,
+    { data: profileRow },
   ] = await Promise.all([
     supabase
       .from("categories")
@@ -31,7 +35,13 @@ export default async function SettingsPage() {
     supabase.from("fixed_costs").select("*").eq("user_id", user.id),
     supabase.from("budgets").select("*").eq("user_id", user.id),
     listPeople().catch(() => []),
+    supabase
+      .from("profiles")
+      .select("home_widgets")
+      .eq("id", user.id)
+      .maybeSingle(),
   ]);
+  const widgetLayout = normalizeLayout(profileRow?.home_widgets);
 
   return (
     <div
@@ -63,6 +73,34 @@ export default async function SettingsPage() {
         <span />
       </div>
       <SubscriptionCard user={user} />
+
+      {/* Bug-report + Help — prominent at the top, before the data sections.
+          The id="feedback" anchor lets the More menu deep-link straight here. */}
+      <section
+        id="feedback"
+        className="bg-emerald-50 rounded-2xl ring-1 ring-emerald-200 shadow-sm p-4 space-y-2"
+      >
+        <h2 className="font-semibold text-emerald-900 flex items-center gap-2">
+          <span className="text-xl">💬</span>
+          <span>Got an issue or an idea?</span>
+        </h2>
+        <p className="text-sm text-emerald-800">
+          Tell the owner directly. Bugs auto-classify and ping straight to
+          their phone — you'll get a notification back when it's fixed.
+        </p>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <BugReportButton variant="prominent" />
+          <Link
+            href="/settings/help"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white text-emerald-700 ring-1 ring-emerald-200 text-sm font-semibold hover:bg-emerald-50"
+          >
+            <span>❓</span>
+            Help & FAQ
+          </Link>
+        </div>
+      </section>
+
+      <WidgetsPanel initial={widgetLayout} />
       <PeopleManager initial={people} />
       <SettingsClient
         email={user.email ?? ""}
@@ -73,7 +111,7 @@ export default async function SettingsPage() {
           budgets: budgets ?? [],
         }}
       />
-      <div className="pt-2 pb-8 flex justify-center">
+      <div className="pt-2 pb-8 flex flex-col items-center gap-3">
         <Link
           href="/"
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600"

@@ -31,6 +31,8 @@ import {
   updateCategory,
 } from "@/app/actions/categories";
 import CategoryPicker from "./CategoryPicker";
+import SortableWidgets from "./SortableWidgets";
+import type { WidgetLayout } from "@/lib/widgets";
 import {
   IconHome,
   IconClock,
@@ -44,6 +46,8 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconPlus,
+  IconHelp,
+  IconChat,
 } from "./Icon";
 
 
@@ -56,6 +60,28 @@ type Props = {
   initialFixedCosts: FixedCost[];
   initialBudgets: Budget[];
   initialPeople: Person[];
+  // Income entries — passed straight to the home-screen Income widget.
+  initialIncomeEntries?: import("@/app/actions/income").IncomeEntry[];
+  // When false (or null in DB), the income widget is hidden from the
+  // dashboard. Toggleable from Settings → Widgets.
+  showIncomeWidget?: boolean;
+  // Per-user widget layout (order + hidden). Drives SortableWidgets.
+  initialWidgetLayout?: WidgetLayout;
+  // Receipt batches keyed by id — used to group line items by receipt
+  // in the History / drill-down expense lists.
+  initialReceiptBatches?: Array<{
+    id: number;
+    merchant: string | null;
+    total_extracted: number | null;
+    scanned_at: string | null;
+  }>;
+};
+
+export type ReceiptBatchRow = {
+  id: number;
+  merchant: string | null;
+  total_extracted: number | null;
+  scanned_at: string | null;
 };
 
 const MONTH_NAMES = [
@@ -70,7 +96,16 @@ export default function BudgetApp({
   initialFixedCosts,
   initialBudgets,
   initialPeople,
+  initialIncomeEntries = [],
+  showIncomeWidget = true,
+  initialWidgetLayout,
+  initialReceiptBatches = [],
 }: Props) {
+  const receiptBatchesById = useMemo(() => {
+    const m = new Map<number, ReceiptBatchRow>();
+    for (const r of initialReceiptBatches) m.set(r.id, r);
+    return m;
+  }, [initialReceiptBatches]);
   const router = useRouter();
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
@@ -108,6 +143,30 @@ export default function BudgetApp({
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
+  }, []);
+
+  // Onboarding tour bridge — listens for events fired from OnboardingFlow
+  // so the tour can switch tabs, open the + menu, etc. Safe to no-op when
+  // no tour is mounted (events just fan out into the void).
+  useEffect(() => {
+    const onGoto = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (typeof detail === "string") setTab(detail as Tab);
+    };
+    const onOpenAdd = () => {
+      // Programmatically click the bottom-add button so the action sheet
+      // opens with the exact same code path users tap.
+      const el = document.querySelector<HTMLButtonElement>(
+        "[data-tour-id='bottom-add']"
+      );
+      el?.click();
+    };
+    window.addEventListener("tour:goto-tab", onGoto);
+    window.addEventListener("tour:open-add-sheet", onOpenAdd);
+    return () => {
+      window.removeEventListener("tour:goto-tab", onGoto);
+      window.removeEventListener("tour:open-add-sheet", onOpenAdd);
+    };
   }, []);
 
   const monthExpenses = useMemo(
@@ -254,6 +313,20 @@ export default function BudgetApp({
             onEditExpense={(e) => setEditExpense(e)}
             onDrill={setDrill}
             onCategoryDrill={(catId) => setCategoryDrill(catId)}
+            widgets={
+              <SortableWidgets
+                layout={
+                  initialWidgetLayout ?? {
+                    order: ["spent", "variable", "fixed", "remaining", "income"],
+                    hidden: [],
+                  }
+                }
+                totals={{ totalSpent, totalBudget, totalFixed, remaining }}
+                onDrill={setDrill}
+                incomeEntries={initialIncomeEntries}
+                showIncomeWidget={showIncomeWidget}
+              />
+            }
           />
         )}
         {tab === "expenses" && (
@@ -265,6 +338,7 @@ export default function BudgetApp({
             people={people}
             catById={catById}
             peopleById={peopleById}
+            receiptBatchesById={receiptBatchesById}
             onAdd={() => setEditExpense("new")}
             onEdit={(e) => setEditExpense(e)}
             onBulkUpdate={async (ids, patch) => {
@@ -427,6 +501,7 @@ export default function BudgetApp({
           peopleById={peopleById}
           categories={categories}
           people={people}
+          receiptBatchesById={receiptBatchesById}
           totals={{ totalSpent, totalBudget, totalFixed, remaining }}
           onClose={() => setDrill(null)}
           onPickExpense={(e) => {
@@ -436,6 +511,10 @@ export default function BudgetApp({
           onPickFixed={(f) => {
             setDrill(null);
             setEditFixed(f);
+          }}
+          onAddFixed={() => {
+            setDrill(null);
+            setEditFixed("new");
           }}
           onJumpBudgets={() => {
             setDrill(null);
@@ -555,6 +634,8 @@ export default function BudgetApp({
         onTab={(t) => setTab(t)}
         onMore={() => setShowMore(true)}
         onAddExpense={() => setEditExpense("new")}
+        onAddFixed={() => setEditFixed("new")}
+        onAddBudget={() => setTab("budgets")}
       />
       <div className="h-28 md:hidden" aria-hidden="true" />
     </div>
@@ -711,6 +792,7 @@ function Dashboard({
   onEditExpense,
   onDrill,
   onCategoryDrill,
+  widgets,
 }: {
   year: number;
   month: number;
@@ -731,6 +813,9 @@ function Dashboard({
   onEditExpense: (e: Expense) => void;
   onDrill?: (kind: DrillKind) => void;
   onCategoryDrill?: (categoryId: number) => void;
+  // Sortable widgets grid (4 stat cards + optional income). Long-press to
+  // remove a widget; drag to reorder. Re-add hidden widgets in Settings.
+  widgets: React.ReactNode;
 }) {
   const ranked = useMemo(() => {
     const total = totals.totalSpent + totals.totalFixed;
@@ -761,36 +846,9 @@ function Dashboard({
 
   return (
     <section className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard
-          label="Total"
-          sublabel="Variable + Fixed"
-          value={fmt(totals.totalSpent + totals.totalFixed)}
-          accent="emerald"
-          onClick={() => onDrill?.("total")}
-        />
-        <StatCard
-          label="Variable"
-          sublabel="This month"
-          value={fmt(totals.totalSpent)}
-          accent="sky"
-          onClick={() => onDrill?.("variable")}
-        />
-        <StatCard
-          label="Fixed"
-          sublabel="Monthly equiv."
-          value={fmt(totals.totalFixed)}
-          accent="violet"
-          onClick={() => onDrill?.("fixed")}
-        />
-        <StatCard
-          label="Remaining"
-          sublabel="Across all budgets"
-          value={fmt(totals.remaining)}
-          accent={totals.remaining < 0 ? "rose" : "emerald"}
-          onClick={() => onDrill?.("remaining")}
-        />
-      </div>
+      {/* 4 stat cards + (optional) income widget — drag to reorder,
+          long-press to remove. Layout persists per user. */}
+      {widgets}
 
       <div className="grid md:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl p-4 shadow-sm">
@@ -1001,6 +1059,7 @@ function ExpensesTab({
   people,
   catById,
   peopleById,
+  receiptBatchesById,
   onAdd,
   onEdit,
   onBulkUpdate,
@@ -1013,6 +1072,7 @@ function ExpensesTab({
   people: Person[];
   catById: Map<number, Category>;
   peopleById: Map<number, Person>;
+  receiptBatchesById?: Map<number, ReceiptBatchRow>;
   onAdd: () => void;
   onEdit: (e: Expense) => void;
   onBulkUpdate: (
@@ -1081,6 +1141,7 @@ function ExpensesTab({
           people={people}
           catById={catById}
           peopleById={peopleById}
+          receiptBatchesById={receiptBatchesById}
           onPickExpense={onEdit}
           onBulkUpdate={onBulkUpdate}
           onBulkDelete={onBulkDelete}
@@ -1105,7 +1166,7 @@ function FixedTab({
   onEdit: (f: FixedCost) => void;
 }) {
   return (
-    <section className="space-y-4">
+    <section className="space-y-4" data-tour-id="fixed-tab">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-bold">Fixed Costs</h2>
         <button
@@ -1226,7 +1287,7 @@ function BudgetsTab({
     : null;
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-4" data-tour-id="budgets-tab">
       <div>
         <h2 className="text-xl font-bold">Monthly Budgets</h2>
         <p className="text-sm text-gray-600">
@@ -1964,8 +2025,10 @@ function DrillDrawer({
   onClose,
   onPickExpense,
   onPickFixed,
+  onAddFixed,
   onJumpBudgets,
   onBulkUpdate,
+  receiptBatchesById,
   onBulkDelete,
 }: {
   kind: DrillKind;
@@ -1988,12 +2051,14 @@ function DrillDrawer({
   onClose: () => void;
   onPickExpense: (e: Expense) => void;
   onPickFixed: (f: FixedCost) => void;
+  onAddFixed?: () => void;
   onJumpBudgets: () => void;
   onBulkUpdate: (
     ids: number[],
     patch: { category_id?: number; date?: string; person_id?: number | null }
   ) => Promise<void>;
   onBulkDelete: (ids: number[]) => Promise<void>;
+  receiptBatchesById?: Map<number, ReceiptBatchRow>;
 }) {
   const title =
     kind === "total"
@@ -2078,6 +2143,7 @@ function DrillDrawer({
               people={people}
               catById={catById}
               peopleById={peopleById}
+              receiptBatchesById={receiptBatchesById}
               onPickExpense={onPickExpense}
               onBulkUpdate={onBulkUpdate}
               onBulkDelete={onBulkDelete}
@@ -2097,11 +2163,22 @@ function DrillDrawer({
             </>
           )}
           {kind === "fixed" && (
-            <FixedRows
-              fixedCosts={fixedCosts}
-              catById={catById}
-              onPick={onPickFixed}
-            />
+            <>
+              {onAddFixed && (
+                <button
+                  type="button"
+                  onClick={onAddFixed}
+                  className="w-full px-4 py-3 rounded-xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 font-semibold text-sm hover:bg-emerald-100 active:scale-[0.99] transition mb-2"
+                >
+                  + Add fixed cost
+                </button>
+              )}
+              <FixedRows
+                fixedCosts={fixedCosts}
+                catById={catById}
+                onPick={onPickFixed}
+              />
+            </>
           )}
           {kind === "remaining" && (
             <RemainingList
@@ -2701,6 +2778,7 @@ function BulkEditableExpenseList({
   onBulkDelete,
   showDate = false,
   emptyText,
+  receiptBatchesById,
 }: {
   expenses: Expense[];
   categories: Category[];
@@ -2715,6 +2793,7 @@ function BulkEditableExpenseList({
   onBulkDelete: (ids: number[]) => Promise<void>;
   showDate?: boolean;
   emptyText?: string;
+  receiptBatchesById?: Map<number, ReceiptBatchRow>;
 }) {
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -2828,19 +2907,60 @@ function BulkEditableExpenseList({
         )}
       </div>
       <div className="space-y-2">
-        {expenses.map((e) => (
-          <SelectableExpenseRow
-            key={e.id}
-            e={e}
-            catById={catById}
-            peopleById={peopleById}
-            selectMode={selectMode}
-            checked={selected.has(e.id)}
-            onToggle={() => toggle(e.id)}
-            onClick={() => onPickExpense(e)}
-            showDate={showDate}
-          />
-        ))}
+        {(() => {
+          const elements: React.ReactNode[] = [];
+          let prevBatchId: number | null | undefined = undefined;
+          for (const e of expenses) {
+            const batchId = e.receipt_batch_id ?? null;
+            if (batchId !== prevBatchId) {
+              if (batchId != null && receiptBatchesById?.has(batchId)) {
+                const batch = receiptBatchesById.get(batchId)!;
+                const dateStr = batch.scanned_at
+                  ? new Date(batch.scanned_at).toLocaleDateString()
+                  : null;
+                elements.push(
+                  <div
+                    key={`batch-${batchId}`}
+                    className="flex items-center gap-2 text-xs text-emerald-800 bg-emerald-50/80 ring-1 ring-emerald-100 rounded-lg px-3 py-1.5 mt-2"
+                  >
+                    <span aria-hidden="true">🧾</span>
+                    <span className="font-semibold">
+                      Receipt: {batch.merchant || "(no merchant)"}
+                    </span>
+                    {batch.total_extracted != null && (
+                      <span className="tabular-nums">
+                        · {fmt(Number(batch.total_extracted))}
+                      </span>
+                    )}
+                    {dateStr && (
+                      <span className="text-emerald-700/80 ml-auto">
+                        {dateStr}
+                      </span>
+                    )}
+                  </div>
+                );
+              }
+              prevBatchId = batchId;
+            }
+            elements.push(
+              <SelectableExpenseRow
+                key={e.id}
+                e={e}
+                catById={catById}
+                peopleById={peopleById}
+                selectMode={selectMode}
+                checked={selected.has(e.id)}
+                onToggle={() => toggle(e.id)}
+                onClick={() => onPickExpense(e)}
+                showDate={showDate}
+                indented={
+                  batchId != null && receiptBatchesById?.has(batchId)
+                }
+              />
+            );
+          }
+          return elements;
+        })()}
       </div>
       {editing && (
         <BulkEditExpenseDialog
@@ -2872,6 +2992,7 @@ function SelectableExpenseRow({
   onToggle,
   onClick,
   showDate,
+  indented = false,
 }: {
   e: Expense;
   catById: Map<number, Category>;
@@ -2881,20 +3002,27 @@ function SelectableExpenseRow({
   onToggle: () => void;
   onClick: () => void;
   showDate: boolean;
+  indented?: boolean;
 }) {
   if (!selectMode) {
     return (
-      <ExpenseRow
-        e={e}
-        catById={catById}
-        peopleById={peopleById}
-        onClick={onClick}
-        showDate={showDate}
-      />
+      <div className={indented ? "ml-4 border-l-2 border-emerald-100 pl-2" : ""}>
+        <ExpenseRow
+          e={e}
+          catById={catById}
+          peopleById={peopleById}
+          onClick={onClick}
+          showDate={showDate}
+        />
+      </div>
     );
   }
   return (
-    <div className="flex items-stretch gap-2">
+    <div
+      className={`flex items-stretch gap-2 ${
+        indented ? "ml-4 border-l-2 border-emerald-100 pl-2" : ""
+      }`}
+    >
       <button
         type="button"
         onClick={onToggle}
@@ -3118,10 +3246,12 @@ function MoreSheet({
     href?: string;
     tab?: Tab;
   }[] = [
-    { label: "Bills", Icon: IconReceipt, tab: "fixed" },
+    { label: "Fixed Costs", Icon: IconReceipt, tab: "fixed" },
     { label: "Budgets", Icon: IconTarget, tab: "budgets" },
     { label: "Categories", Icon: IconTag, tab: "categories" },
     { label: "Expenses", Icon: IconList, tab: "expenses" },
+    { label: "Help & FAQ", Icon: IconHelp, href: "/settings/help" },
+    { label: "Send feedback", Icon: IconChat, href: "/settings#feedback" },
     { label: "Settings & Export", Icon: IconSettings, href: "/settings" },
   ];
   return (
@@ -3172,50 +3302,155 @@ function MoreSheet({
 }
 
 // =============================================================
-// Mobile bottom navigation: Home / Bills / [Scan] / History / More
+// Mobile bottom navigation: Home / Add / [Scan] / History / More
 // =============================================================
 function BottomNav({
   currentTab,
   onTab,
   onMore,
   onAddExpense,
+  onAddFixed,
+  onAddBudget,
 }: {
   currentTab: Tab;
   onTab: (t: Tab) => void;
   onMore: () => void;
   onAddExpense: () => void;
+  onAddFixed: () => void;
+  onAddBudget: () => void;
 }) {
+  const [addOpen, setAddOpen] = useState(false);
+
+  function pick(action: () => void) {
+    setAddOpen(false);
+    action();
+  }
+
   return (
-    <nav
-      className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur border-t border-gray-200 shadow-[0_-4px_16px_rgba(0,0,0,0.04)]"
-      style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1.25rem)" }}
-    >
-      <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end pt-3">
-        <NavBtn
-          label="Home"
-          Icon={IconHome}
-          active={currentTab === "dashboard"}
-          onClick={() => onTab("dashboard")}
-        />
-        <NavBtn label="Add" Icon={IconPlus} onClick={onAddExpense} />
-        <Link
-          href="/scan"
-          aria-label="Scan receipt"
-          className="flex justify-center -mt-6"
+    <>
+      <nav
+        className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur border-t border-gray-200 shadow-[0_-4px_16px_rgba(0,0,0,0.04)]"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 1.25rem)" }}
+      >
+        <div className="max-w-5xl mx-auto px-2 grid grid-cols-5 items-end pt-3">
+          <NavBtn
+            label="Home"
+            Icon={IconHome}
+            active={currentTab === "dashboard"}
+            onClick={() => onTab("dashboard")}
+          />
+          <NavBtn
+            label="Add"
+            Icon={IconPlus}
+            onClick={() => setAddOpen(true)}
+            tourId="bottom-add"
+          />
+          <Link
+            href="/scan"
+            aria-label="Scan receipt"
+            data-tour-id="bottom-scan"
+            className="flex justify-center -mt-6"
+          >
+            <span className="w-14 h-14 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-lg ring-4 ring-white">
+              <IconCamera size={26} strokeWidth={2} />
+            </span>
+          </Link>
+          <NavBtn
+            label="History"
+            Icon={IconClock}
+            active={currentTab === "expenses"}
+            onClick={() => onTab("expenses")}
+          />
+          <NavBtn label="More" Icon={IconMore} onClick={onMore} tourId="bottom-more" />
+        </div>
+      </nav>
+
+      {addOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-40 bg-black/50 flex items-end"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAddOpen(false);
+          }}
         >
-          <span className="w-14 h-14 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-lg ring-4 ring-white">
-            <IconCamera size={26} strokeWidth={2} />
-          </span>
-        </Link>
-        <NavBtn
-          label="History"
-          Icon={IconClock}
-          active={currentTab === "expenses"}
-          onClick={() => onTab("expenses")}
-        />
-        <NavBtn label="More" Icon={IconMore} onClick={onMore} />
-      </div>
-    </nav>
+          <div
+            className="w-full bg-white rounded-t-3xl shadow-2xl p-4 space-y-2"
+            style={{
+              paddingBottom: "max(1rem, env(safe-area-inset-bottom))",
+            }}
+          >
+            <div className="flex justify-center pb-2">
+              <span className="block w-10 h-1 rounded-full bg-gray-300" />
+            </div>
+            <h3 className="text-sm font-semibold text-gray-500 text-center pb-1">
+              What do you want to add?
+            </h3>
+            <button
+              onClick={() => pick(onAddExpense)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 ring-1 ring-emerald-100"
+            >
+              <span className="text-2xl">💸</span>
+              <span className="flex-1 text-left">
+                <span className="block font-semibold text-emerald-900">
+                  Expense
+                </span>
+                <span className="block text-xs text-emerald-700">
+                  One-time spend (groceries, gas, takeout)
+                </span>
+              </span>
+            </button>
+            <button
+              onClick={() => pick(onAddFixed)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-sky-50 hover:bg-sky-100 ring-1 ring-sky-100"
+            >
+              <span className="text-2xl">🏠</span>
+              <span className="flex-1 text-left">
+                <span className="block font-semibold text-sky-900">
+                  Fixed cost
+                </span>
+                <span className="block text-xs text-sky-700">
+                  Recurring bill (rent, subscription, insurance)
+                </span>
+              </span>
+            </button>
+            <button
+              onClick={() => pick(onAddBudget)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-violet-50 hover:bg-violet-100 ring-1 ring-violet-100"
+            >
+              <span className="text-2xl">🎯</span>
+              <span className="flex-1 text-left">
+                <span className="block font-semibold text-violet-900">
+                  Budget
+                </span>
+                <span className="block text-xs text-violet-700">
+                  Set a monthly cap on a category
+                </span>
+              </span>
+            </button>
+            <Link
+              href="/scan"
+              onClick={() => setAddOpen(false)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-rose-50 hover:bg-rose-100 ring-1 ring-rose-100"
+            >
+              <span className="text-2xl">📸</span>
+              <span className="flex-1 text-left">
+                <span className="block font-semibold text-rose-900">
+                  Scan a receipt
+                </span>
+                <span className="block text-xs text-rose-700">
+                  AI extracts every line item
+                </span>
+              </span>
+            </Link>
+            <button
+              onClick={() => setAddOpen(false)}
+              className="w-full px-4 py-3 mt-1 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -3224,15 +3459,18 @@ function NavBtn({
   Icon,
   active = false,
   onClick,
+  tourId,
 }: {
   label: string;
   Icon: (p: { size?: number; className?: string }) => React.ReactElement;
   active?: boolean;
   onClick: () => void;
+  tourId?: string;
 }) {
   return (
     <button
       onClick={onClick}
+      data-tour-id={tourId}
       className={`flex flex-col items-center gap-0.5 py-2 ${
         active ? "text-emerald-600" : "text-gray-500"
       }`}

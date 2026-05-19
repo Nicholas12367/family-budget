@@ -1,7 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import BudgetApp from "@/components/BudgetApp";
+import OnboardingFlow from "@/components/OnboardingFlow";
 import { listPeople } from "@/app/actions/people";
+import { listIncome } from "@/app/actions/income";
+import { normalizeLayout } from "@/lib/widgets";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +21,9 @@ export default async function HomePage() {
     { data: fixedCosts = [] },
     { data: budgets = [] },
     people,
+    { data: profileRow },
+    incomeRows,
+    { data: receiptBatches = [] },
   ] = await Promise.all([
     supabase
       .from("categories")
@@ -33,16 +39,37 @@ export default async function HomePage() {
     supabase.from("fixed_costs").select("*").eq("user_id", user.id).order("name"),
     supabase.from("budgets").select("*").eq("user_id", user.id),
     listPeople().catch(() => []),
+    supabase
+      .from("profiles")
+      .select("onboarded_at, show_income_widget, home_widgets")
+      .eq("id", user.id)
+      .maybeSingle(),
+    listIncome().catch(() => []),
+    supabase
+      .from("receipt_batches")
+      .select("id, merchant, total_extracted, scanned_at")
+      .eq("user_id", user.id),
   ]);
 
+  const needsOnboarding = !profileRow?.onboarded_at;
+  const showIncomeWidget = profileRow?.show_income_widget ?? true;
+  const widgetLayout = normalizeLayout(profileRow?.home_widgets);
+
   return (
-    <BudgetApp
-      email={user.email ?? ""}
-      initialCategories={categories ?? []}
-      initialExpenses={expenses ?? []}
-      initialFixedCosts={fixedCosts ?? []}
-      initialBudgets={budgets ?? []}
-      initialPeople={people}
-    />
+    <>
+      <BudgetApp
+        email={user.email ?? ""}
+        initialCategories={categories ?? []}
+        initialExpenses={expenses ?? []}
+        initialFixedCosts={fixedCosts ?? []}
+        initialBudgets={budgets ?? []}
+        initialPeople={people}
+        initialIncomeEntries={incomeRows}
+        showIncomeWidget={showIncomeWidget}
+        initialWidgetLayout={widgetLayout}
+        initialReceiptBatches={receiptBatches ?? []}
+      />
+      {needsOnboarding && <OnboardingFlow userId={user.id} />}
+    </>
   );
 }

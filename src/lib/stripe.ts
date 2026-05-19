@@ -26,11 +26,16 @@ export const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
 export const ACTIVE_STATUSES = new Set<string>(["active", "trialing"]);
 
 // Grandfathered emails — these accounts skip billing entirely.
+// All three are the owner's personal accounts so any of them logs in free.
 export const GRANDFATHERED_EMAILS = new Set<string>([
   "nicholas_connelly@icloud.com",
+  "info@reachscreens.ca",
+  "nconnelly272@gmail.com",
 ]);
 
-// Owner emails — full admin access (the /admin dashboard).
+// Owner email — full admin access (the owner-only dashboard).
+// Locked to the iCloud account on purpose. Sign in as nicholas_connelly@icloud.com
+// to see the dashboard; any other email (even the grandfathered ones) gets a 404.
 export const ADMIN_EMAILS = new Set<string>([
   "nicholas_connelly@icloud.com",
 ]);

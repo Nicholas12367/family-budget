@@ -6,6 +6,22 @@ import {
   setSubForUser,
   type SubscriptionState,
 } from "@/lib/subscription";
+import { notifyOwner } from "@/lib/admin-notify";
+
+// Best-effort lookup of a Stripe customer's email for owner notifications.
+async function customerEmail(
+  customerId: string
+): Promise<string> {
+  try {
+    const customer = await stripe().customers.retrieve(customerId);
+    if (customer && !("deleted" in customer && customer.deleted)) {
+      return customer.email ?? customerId;
+    }
+  } catch {
+    // ignored
+  }
+  return customerId;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -110,6 +126,37 @@ export async function POST(req: NextRequest) {
           customer_id: customerId,
           ...snapshot(sub),
         });
+
+        // Owner notifications for cancellations.
+        if (event.type === "customer.subscription.deleted") {
+          const email = await customerEmail(customerId);
+          void notifyOwner({
+            title: "💔 Subscription cancelled",
+            body: email,
+            url: `/nicholas-x7k2qz9j/users/${userId}`,
+            tag: `cancel-${userId}`,
+          });
+        } else if (
+          event.type === "customer.subscription.updated" &&
+          sub.cancel_at_period_end
+        ) {
+          // Only ping when cancel_at_period_end transitions to true (the
+          // user clicked "cancel" in the customer portal but the sub
+          // remains active until period end). Stripe events arrive with
+          // `previous_attributes` showing what changed.
+          const prev = (event.data as unknown as {
+            previous_attributes?: { cancel_at_period_end?: boolean };
+          }).previous_attributes;
+          if (prev?.cancel_at_period_end === false) {
+            const email = await customerEmail(customerId);
+            void notifyOwner({
+              title: "🟡 Cancellation scheduled",
+              body: `${email} will cancel at period end`,
+              url: `/nicholas-x7k2qz9j/users/${userId}`,
+              tag: `cancel-scheduled-${userId}`,
+            });
+          }
+        }
         break;
       }
 
@@ -152,6 +199,20 @@ export async function POST(req: NextRequest) {
           customer_id: customerId,
           ...snapshot(sub),
         });
+
+        // Owner notification on payment failure.
+        if (event.type === "invoice.payment_failed") {
+          const email = await customerEmail(customerId);
+          const amountCents =
+            (invoice as unknown as { amount_due?: number }).amount_due ?? 0;
+          const amount = (amountCents / 100).toFixed(2);
+          void notifyOwner({
+            title: "💸 Payment failed",
+            body: `${email} — $${amount} CAD`,
+            url: `/nicholas-x7k2qz9j/users/${resolved}`,
+            tag: `payment-failed-${invoice.id}`,
+          });
+        }
         break;
       }
 

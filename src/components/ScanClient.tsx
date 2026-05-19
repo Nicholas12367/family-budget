@@ -8,9 +8,51 @@ import { compressImage, ImageProcessingError } from "@/lib/image";
 import type { Category, Person, ScanResult } from "@/lib/types";
 import { isFutureDate, todayLocalISO } from "@/lib/rollover";
 import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
+import { logScanUploadStep } from "@/app/actions/scan-diag";
 import CategoryPicker from "./CategoryPicker";
 import PersonSelector from "./PersonSelector";
 import { IconArrowLeft, IconCamera } from "./Icon";
+
+// --- Mobile diagnostics helpers ---
+// Samsung Internet, older Android WebKit, and various Chrome forks all have
+// known quirks where <input type="file" capture> fires `change` with an
+// empty FileList, or with a File whose `type` and `name` are blank. We log
+// every step to scan_upload_log so we can diagnose silent failures.
+
+function deviceHint() {
+  if (typeof navigator === "undefined") return "Other";
+  const ua = navigator.userAgent;
+  if (/SamsungBrowser/i.test(ua)) return "Samsung Internet";
+  if (/Pixel/i.test(ua)) return "Pixel";
+  if (/SM-/i.test(ua) || /Samsung/i.test(ua)) return "Samsung";
+  if (/iPhone/i.test(ua)) return "iPhone";
+  if (/iPad/i.test(ua)) return "iPad";
+  if (/Android/i.test(ua)) return "Android";
+  if (/Macintosh/i.test(ua)) return "Mac";
+  if (/Windows/i.test(ua)) return "Windows";
+  return "Other";
+}
+
+function userAgent() {
+  return typeof navigator !== "undefined" ? navigator.userAgent : "";
+}
+
+// Wrapper that logs but never throws.
+async function diag(
+  step: Parameters<typeof logScanUploadStep>[0]["step"],
+  extra?: Partial<Parameters<typeof logScanUploadStep>[0]>
+) {
+  try {
+    await logScanUploadStep({
+      step,
+      user_agent: userAgent(),
+      device_hint: deviceHint(),
+      ...extra,
+    });
+  } catch {
+    // ignored
+  }
+}
 
 type LineDraft = {
   description: string;
@@ -99,6 +141,12 @@ export default function ScanClient({
 
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
+  // Bumping these counters re-mounts the file input so Samsung doesn't
+  // get stuck on a stale element after a failed/empty pick.
+  const [cameraInputKey, setCameraInputKey] = useState(0);
+  const [galleryInputKey, setGalleryInputKey] = useState(0);
+  const [busyHint, setBusyHint] = useState<string | null>(null);
+  const [showManualEntryFallback, setShowManualEntryFallback] = useState(false);
 
   const review = reviews[activeIdx] ?? null;
   const hasReceipts = reviews.length > 0;
@@ -134,15 +182,73 @@ export default function ScanClient({
         pst_taxable: li.pst_taxable,
         category_id: pickCategoryId(li.category_name),
         notes: li.notes,
-        date: res.date,
+        // Every line uses TODAY in the user's local timezone — receipts
+        // are logged on the day they're scanned, not the day they were
+        // purchased. Editable from the review header.
+        date: todayLocalISO(),
         selected: true,
       };
     });
   }
 
+  // Single attempt to scan one file with timeout protection.
+  async function scanOnce(file: File): Promise<ScanResult> {
+    void diag("compress_start", {
+      file_name: file.name,
+      file_type: file.type,
+      file_size_bytes: file.size,
+    });
+    const compressed = await compressImage(file);
+    void diag("compress_done", {
+      file_name: compressed.name,
+      file_type: compressed.type,
+      file_size_bytes: compressed.size,
+    });
+
+    void diag("upload_start", {
+      file_name: compressed.name,
+      file_size_bytes: compressed.size,
+    });
+    const fd = new FormData();
+    fd.append("image", compressed);
+    const res = await scanReceiptAction(fd);
+    // Server Action returns a discriminated union so production builds
+    // don't mask the message. Throw here so existing retry/error
+    // handling can react to it the same way it would a network throw.
+    if (!res.ok) {
+      const err = new Error(res.error) as Error & { code?: string };
+      err.code = res.code;
+      throw err;
+    }
+    void diag("upload_ok", { file_name: compressed.name });
+    return res.result;
+  }
+
+  // Run with up to 2 retries on transient errors. Server-side errors with
+  // a clear user-facing message (rate limits, bad image format) are surfaced
+  // immediately without retry.
+  async function scanWithRetry(file: File): Promise<ScanResult> {
+    const transientPattern =
+      /(?:network|fetch|timeout|503|502|temporarily|service is temporarily|reach the receipt scanning service)/i;
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await scanOnce(file);
+      } catch (e) {
+        lastErr = e as Error;
+        if (!transientPattern.test(lastErr.message ?? "")) throw lastErr;
+        // Exponential backoff: 1s, 2s.
+        if (attempt < 2)
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+    throw lastErr ?? new Error("Scan failed after retries");
+  }
+
   async function processFiles(files: File[]) {
     if (!files.length) return;
     setError(null);
+    setShowManualEntryFallback(false);
     setBusy(true);
     setProgress({ done: 0, total: files.length });
     const next: ReviewState[] = [];
@@ -151,10 +257,8 @@ export default function ScanClient({
       const file = files[i];
       const label = file.name || `Photo ${i + 1}`;
       try {
+        const res = await scanWithRetry(file);
         const compressed = await compressImage(file);
-        const fd = new FormData();
-        fd.append("image", compressed);
-        const res = await scanReceiptAction(fd);
         const reader = await new Promise<string>((resolve) => {
           const r = new FileReader();
           r.onload = () => resolve(r.result as string);
@@ -163,7 +267,9 @@ export default function ScanClient({
         next.push({
           result: res,
           merchant: res.merchant ?? "",
-          date: res.date,
+          // Always default to today (user's local tz). The user can edit
+          // this in the review header if they're logging an older receipt.
+          date: todayLocalISO(),
           thumb: reader,
           lines: buildLines(res),
         });
@@ -174,6 +280,10 @@ export default function ScanClient({
             ? err.message
             : err?.message ||
               "Something went wrong scanning that photo. Try again.";
+        void diag("upload_error", {
+          file_name: label,
+          detail: msg,
+        });
         failures.push(`${label}: ${msg}`);
       } finally {
         setProgress({ done: i + 1, total: files.length });
@@ -186,27 +296,57 @@ export default function ScanClient({
     if (failures.length) {
       setError(
         files.length === 1
-          ? // Single-file: show just the error, no filename prefix.
-            failures[0].replace(/^[^:]+:\s*/, "")
+          ? failures[0].replace(/^[^:]+:\s*/, "")
           : `${failures.length} of ${files.length} photo${
               files.length === 1 ? "" : "s"
             } couldn't be scanned:\n• ${failures.join("\n• ")}`
       );
+      // Always offer the manual-entry fallback after a failure.
+      setShowManualEntryFallback(true);
     }
     setBusy(false);
+    setBusyHint(null);
     setProgress(null);
   }
 
-  function onCameraPick(file: File | undefined) {
-    if (!file) return;
-    processFiles([file]);
+  function onCameraPick(files: FileList | null) {
+    void diag("change_fired", {
+      detail: `camera input — files=${files?.length ?? 0}`,
+    });
+    if (!files || files.length === 0) {
+      // Samsung Internet sometimes fires `change` with empty FileList
+      // after a successful camera capture. Re-mount the input and warn.
+      void diag("change_empty", {
+        detail: "camera change event arrived with empty files list",
+      });
+      setCameraInputKey((k) => k + 1);
+      setError(
+        "Your camera didn't return the photo to the app. This happens sometimes on Samsung phones. Try again — if it keeps failing, tap 'Upload from gallery' instead."
+      );
+      setShowManualEntryFallback(true);
+      return;
+    }
+    setBusyHint("Got the photo — uploading…");
+    processFiles(Array.from(files));
     if (cameraRef.current) cameraRef.current.value = "";
+    setCameraInputKey((k) => k + 1);
   }
 
   function onGalleryPick(fileList: FileList | null) {
-    if (!fileList || !fileList.length) return;
+    void diag("change_fired", {
+      detail: `gallery input — files=${fileList?.length ?? 0}`,
+    });
+    if (!fileList || !fileList.length) {
+      void diag("change_empty", { detail: "gallery change empty" });
+      setGalleryInputKey((k) => k + 1);
+      return;
+    }
+    setBusyHint(
+      `Got ${fileList.length} photo${fileList.length === 1 ? "" : "s"} — uploading…`
+    );
     processFiles(Array.from(fileList));
     if (galleryRef.current) galleryRef.current.value = "";
+    setGalleryInputKey((k) => k + 1);
   }
 
   const selectedLines = useMemo(
@@ -246,7 +386,7 @@ export default function ScanClient({
           last.amount = Math.round((Number(last.amount) + diff) * 100) / 100;
         }
       }
-      await saveScannedExpenses({
+      const saveRes = await saveScannedExpenses({
         merchant: review.merchant,
         date: review.date,
         total: review.result.grand_total || review.result.total,
@@ -260,6 +400,11 @@ export default function ScanClient({
           person_id: personId,
         })),
       });
+      if (!saveRes.ok) {
+        setError(saveRes.error);
+        setBusy(false);
+        return;
+      }
       // Move to next receipt or home
       const nextReviews = reviews.filter((_, i) => i !== activeIdx);
       if (nextReviews.length === 0) {
@@ -403,6 +548,28 @@ export default function ScanClient({
         )}
       </div>
 
+      {busyHint && !progress && (
+        <div className="bg-emerald-50 ring-1 ring-emerald-100 text-emerald-900 rounded-lg p-3 text-sm flex items-center gap-2">
+          <span className="inline-block w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
+          <span>{busyHint}</span>
+        </div>
+      )}
+
+      {showManualEntryFallback && error && (
+        <div className="bg-amber-50 ring-1 ring-amber-200 text-amber-900 rounded-lg p-3 text-sm space-y-2">
+          <p>
+            <strong>Stuck?</strong> If the scanner won&apos;t cooperate, you
+            can enter the receipt by hand instead.
+          </p>
+          <Link
+            href="/"
+            className="inline-block px-3 py-1.5 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700"
+          >
+            Go to dashboard → tap + → Add expense
+          </Link>
+        </div>
+      )}
+
       {error && (
         <div
           role="alert"
@@ -473,16 +640,23 @@ export default function ScanClient({
             </p>
           </div>
 
+          {/* Camera input — `capture="environment"` asks the OS to open
+              the back-facing camera directly. Removing it (older Samsung
+              workaround) made the "Take a photo" button just open a
+              generic file picker on every other browser. Samsung
+              Internet's empty-FileList quirk is handled by onCameraPick. */}
           <input
+            key={`cam-${cameraInputKey}`}
             ref={cameraRef}
             type="file"
             accept="image/*,.heic,.heif"
             capture="environment"
             className="hidden"
             disabled={busy}
-            onChange={(e) => onCameraPick(e.target.files?.[0])}
+            onChange={(e) => onCameraPick(e.target.files)}
           />
           <input
+            key={`gal-${galleryInputKey}`}
             ref={galleryRef}
             type="file"
             accept="image/*,.heic,.heif"
@@ -585,21 +759,63 @@ export default function ScanClient({
                   placeholder="Merchant"
                   className="w-full bg-transparent text-xl font-extrabold tracking-tight text-gray-900 outline-none truncate"
                 />
-                <input
-                  type="date"
-                  value={review.date}
-                  onChange={(e) => {
-                    const newDate = e.target.value;
-                    updateActiveReceipt({
-                      date: newDate,
-                      lines: review.lines.map((l) => ({
-                        ...l,
+                <div className="mt-2 inline-flex items-center gap-2 bg-white ring-1 ring-emerald-200 rounded-lg pl-3 pr-2 py-1.5">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="text-emerald-700"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="4" width="18" height="18" rx="2" />
+                    <path d="M16 2v4M8 2v4M3 10h18" />
+                  </svg>
+                  <label className="text-xs font-semibold text-emerald-800 uppercase tracking-wide cursor-pointer">
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={review.date}
+                    onChange={(e) => {
+                      const newDate = e.target.value;
+                      updateActiveReceipt({
                         date: newDate,
-                      })),
-                    });
-                  }}
-                  className="text-sm text-gray-500 bg-transparent outline-none mt-1"
-                />
+                        lines: review.lines.map((l) => ({
+                          ...l,
+                          date: newDate,
+                        })),
+                      });
+                    }}
+                    className="text-sm font-semibold text-gray-900 bg-transparent outline-none cursor-pointer"
+                    aria-label="Edit receipt date"
+                  />
+                  <span className="text-[11px] text-emerald-700/80 ml-1">
+                    tap to edit
+                  </span>
+                </div>
+                {review.date !== todayLocalISO() && (
+                  <p className="text-[11px] text-amber-700 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-1 mt-1.5 inline-block">
+                    Not today's date —{" "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const t = todayLocalISO();
+                        updateActiveReceipt({
+                          date: t,
+                          lines: review.lines.map((l) => ({ ...l, date: t })),
+                        });
+                      }}
+                      className="underline font-semibold"
+                    >
+                      reset to today
+                    </button>
+                  </p>
+                )}
               </div>
               <div className="text-right">
                 <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">

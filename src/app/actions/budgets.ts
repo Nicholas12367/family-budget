@@ -19,6 +19,10 @@ type SetBudgetInput = {
   rolls_over?: boolean;
   is_personal?: boolean;
   person_name?: string | null;
+  // Optional override of the global notification thresholds. Pass an array
+  // like [60, 90, 100] to ping at 60%, 90%, and at the limit. Pass null
+  // (the default) to use the global defaults from push.ts.
+  alert_thresholds?: number[] | null;
 };
 
 // Errors that mean "the rollover/personal columns aren't on this DB yet".
@@ -58,6 +62,10 @@ export async function setBudget(input: SetBudgetInput): Promise<Budget | null> {
     rolls_over: input.rolls_over ?? false,
     is_personal: input.is_personal ?? false,
     person_name: input.is_personal ? (input.person_name ?? null) : null,
+    alert_thresholds:
+      Array.isArray(input.alert_thresholds) && input.alert_thresholds.length > 0
+        ? input.alert_thresholds
+        : null,
   };
 
   const { data, error } = await supabase

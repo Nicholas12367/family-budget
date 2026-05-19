@@ -64,17 +64,48 @@ export async function setSubForUser(
       subscription: next,
     },
   });
+
+  // Mirror the customer_id into the lookup table so the webhook can
+  // resolve user_id in O(1) instead of paging through all auth.users.
+  if (next.customer_id) {
+    try {
+      await supa
+        .from("stripe_customer_map")
+        .upsert(
+          { user_id: userId, customer_id: next.customer_id },
+          { onConflict: "user_id" }
+        );
+    } catch (e) {
+      // Table may not exist yet (migration not run). Don't break sub updates.
+      console.error("[stripe_customer_map] upsert failed:", e);
+    }
+  }
+
   return next;
 }
 
-// Look up Supabase user id by Stripe customer id, by walking auth.users
-// pages and reading the customer_id we stored in user_metadata. There's
-// no built-in index, but the user count in this app is small. For
-// scale we'd add a `stripe_customers` Supabase table; not worth it yet.
+// Look up Supabase user id by Stripe customer id. Fast path uses the
+// `stripe_customer_map` table (O(1) indexed lookup). Falls back to the
+// legacy O(n) page walk through auth.users if the map is missing the row
+// (e.g. an old user who signed up before the map existed).
 export async function findUserIdByCustomerId(
   customerId: string
 ): Promise<string | null> {
   const supa = adminClient();
+
+  // Fast path.
+  try {
+    const { data, error } = await supa
+      .from("stripe_customer_map")
+      .select("user_id")
+      .eq("customer_id", customerId)
+      .maybeSingle();
+    if (!error && data?.user_id) return data.user_id;
+  } catch {
+    // Table may not exist yet — fall through to slow path.
+  }
+
+  // Slow fallback: walk auth.users metadata. Lazily backfills the map.
   let page = 1;
   while (page < 50) {
     const { data, error } = await supa.auth.admin.listUsers({
@@ -87,7 +118,20 @@ export async function findUserIdByCustomerId(
     for (const u of users) {
       const sub = (u.user_metadata as { subscription?: SubscriptionState })
         ?.subscription;
-      if (sub?.customer_id === customerId) return u.id;
+      if (sub?.customer_id === customerId) {
+        // Backfill so future lookups are O(1).
+        try {
+          await supa
+            .from("stripe_customer_map")
+            .upsert(
+              { user_id: u.id, customer_id: customerId },
+              { onConflict: "user_id" }
+            );
+        } catch {
+          // Non-fatal.
+        }
+        return u.id;
+      }
     }
     if (users.length < 1000) return null;
     page++;

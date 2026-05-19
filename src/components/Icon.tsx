@@ -176,3 +176,23 @@ export function IconPlus({ className, size, strokeWidth }: IconProps) {
   );
 }
 
+// Question mark in a circle — used for Help & FAQ.
+export function IconHelp({ className, size, strokeWidth }: IconProps) {
+  return (
+    <svg {...base(size, className, strokeWidth)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1.2.7-1.5 1.2-1.5 2.2" />
+      <circle cx="12" cy="17" r="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+// Speech bubble — used for Send feedback.
+export function IconChat({ className, size, strokeWidth }: IconProps) {
+  return (
+    <svg {...base(size, className, strokeWidth)}>
+      <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.5-.7L3 21l1.7-5a8.38 8.38 0 0 1-.7-3.5A8.5 8.5 0 0 1 12.5 4a8.38 8.38 0 0 1 8.5 7.5z" />
+    </svg>
+  );
+}
+

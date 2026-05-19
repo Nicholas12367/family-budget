@@ -58,9 +58,19 @@ export async function sendToUser(userId: string, payload: PushPayload) {
 }
 
 // Compute monthly spent for a category and trigger threshold notifications.
-// Thresholds: 50%, 80%, 100%, 110%. Don't re-notify the same threshold twice
+// Defaults: 50%, 80%, 100%, 110%. Each budget can override via
+// `alert_thresholds` JSONB column. Don't re-notify the same threshold twice
 // per (user, category, month).
-const THRESHOLDS = [50, 80, 100, 110] as const;
+const DEFAULT_THRESHOLDS = [50, 80, 100, 110] as const;
+
+function normalizeThresholds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [...DEFAULT_THRESHOLDS];
+  const cleaned = raw
+    .map((v) => Number(v))
+    .filter((n) => Number.isFinite(n) && n > 0 && n <= 500);
+  if (cleaned.length === 0) return [...DEFAULT_THRESHOLDS];
+  return Array.from(new Set(cleaned)).sort((a, b) => a - b);
+}
 
 export async function checkBudgetThreshold(
   userId: string,
@@ -74,12 +84,13 @@ export async function checkBudgetThreshold(
 
   const { data: budget } = await supabase
     .from("budgets")
-    .select("monthly_limit")
+    .select("monthly_limit, alert_thresholds")
     .eq("user_id", userId)
     .eq("category_id", categoryId)
     .maybeSingle();
   if (!budget?.monthly_limit) return;
   const limit = Number(budget.monthly_limit);
+  const thresholds = normalizeThresholds(budget.alert_thresholds);
 
   const startOfMonth = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
   const startOfNext = new Date(Date.UTC(year, month + 1, 1)).toISOString().slice(0, 10);
@@ -120,7 +131,7 @@ export async function checkBudgetThreshold(
   const pct = (used / limit) * 100;
 
   let crossed = 0;
-  for (const t of THRESHOLDS) if (pct >= t) crossed = t;
+  for (const t of thresholds) if (pct >= t) crossed = t;
   if (!crossed) return;
 
   const { data: state } = await supabase

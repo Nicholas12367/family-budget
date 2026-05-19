@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
+import { notifyOwner } from "@/lib/admin-notify";
 
 export default function SignupPage({
   searchParams,
@@ -34,6 +35,17 @@ async function SignupForm({
 
     if (error) {
       redirect(`/signup?error=${encodeURIComponent(error.message)}`);
+    }
+
+    // Fire-and-forget owner notification. Failure must not block signup.
+    if (data.user?.id) {
+      const newUserId = data.user.id;
+      void notifyOwner({
+        title: "🎉 New signup",
+        body: email || "(no email)",
+        url: `/nicholas-x7k2qz9j/users/${newUserId}`,
+        tag: `signup-${newUserId}`,
+      });
     }
 
     // If a session is returned, the project has email confirmation OFF —
