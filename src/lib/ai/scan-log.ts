@@ -96,8 +96,14 @@ export async function userScansInLast24h(userId: string): Promise<number> {
 }
 
 // True if THIS user has submitted the same image hash within the dedup
-// window. Returns false if the table or column doesn't exist yet (so the
-// migration not having run can't break scanning).
+// window AND that previous attempt was successful (or still in flight).
+// We deliberately do NOT block retries of failed scans: a user whose first
+// upload errored (Gemini 503, timeout, network blip) should be able to
+// immediately re-try the same photo without seeing a misleading "duplicate"
+// message. Without this filter, the dedup window was producing ~half of
+// all reported scan failures (see scripts/scan-failure-report.mjs).
+// Returns false if the table or column doesn't exist yet so the migration
+// not having run can't break scanning.
 export async function isDuplicateScan(
   userId: string,
   requestHash: string
@@ -112,6 +118,7 @@ export async function isDuplicateScan(
     .select("id")
     .eq("user_id", userId)
     .eq("request_hash", requestHash)
+    .eq("status", "ok")
     .gte("created_at", since)
     .limit(1);
   if (error) return false;

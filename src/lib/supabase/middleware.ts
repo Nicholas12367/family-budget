@@ -25,6 +25,20 @@ const SUBSCRIPTION_BYPASS_PATHS = [
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
 
+// Explicit cookie options for the auth session. Supabase ssr defaults to
+// maxAge=400d / sameSite=lax / path=/, but it does NOT set `secure`. On
+// Android, when the app is installed to the home screen as a PWA (WebAPK),
+// modern Chromium treats cookies without the Secure flag more aggressively
+// — including evicting them when the WebAPK process is killed. iOS PWAs
+// have a sandboxed cookie jar that survives, which is why iPhone users
+// don't see this. Setting Secure + lax for prod keeps the refresh token
+// alive across PWA cold-starts.
+const AUTH_COOKIE_OPTIONS = {
+  sameSite: "lax" as const,
+  secure: process.env.NODE_ENV === "production",
+  path: "/",
+};
+
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
@@ -32,6 +46,7 @@ export async function updateSession(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: AUTH_COOKIE_OPTIONS,
       cookies: {
         getAll() {
           return request.cookies.getAll();
