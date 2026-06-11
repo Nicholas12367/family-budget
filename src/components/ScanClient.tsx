@@ -191,20 +191,8 @@ export default function ScanClient({
     });
   }
 
-  // Single attempt to scan one file with timeout protection.
-  async function scanOnce(file: File): Promise<ScanResult> {
-    void diag("compress_start", {
-      file_name: file.name,
-      file_type: file.type,
-      file_size_bytes: file.size,
-    });
-    const compressed = await compressImage(file);
-    void diag("compress_done", {
-      file_name: compressed.name,
-      file_type: compressed.type,
-      file_size_bytes: compressed.size,
-    });
-
+  // Single upload attempt for an already-compressed file.
+  async function scanOnce(compressed: File): Promise<ScanResult> {
     void diag("upload_start", {
       file_name: compressed.name,
       file_size_bytes: compressed.size,
@@ -224,22 +212,23 @@ export default function ScanClient({
     return res.result;
   }
 
-  // Run with up to 2 retries on transient errors. Server-side errors with
-  // a clear user-facing message (rate limits, bad image format) are surfaced
-  // immediately without retry.
-  async function scanWithRetry(file: File): Promise<ScanResult> {
+  // Run with one client-side retry on transient errors. The server already
+  // retries the Gemini call internally within its time budget, so a single
+  // extra attempt here is enough to ride out a dropped upload — more than that
+  // just re-uploads the image and burns quota for no benefit. Errors with a
+  // clear user-facing cause (rate limits, bad image format, too long) are
+  // surfaced immediately without retry.
+  async function scanWithRetry(compressed: File): Promise<ScanResult> {
     const transientPattern =
-      /(?:network|fetch|timeout|503|502|temporarily|service is temporarily|reach the receipt scanning service)/i;
+      /(?:network|fetch|503|502|temporarily|service is temporarily|reach the receipt scanning service)/i;
     let lastErr: Error | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await scanOnce(file);
+        return await scanOnce(compressed);
       } catch (e) {
         lastErr = e as Error;
         if (!transientPattern.test(lastErr.message ?? "")) throw lastErr;
-        // Exponential backoff: 1s, 2s.
-        if (attempt < 2)
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        if (attempt < 1) await new Promise((r) => setTimeout(r, 1000));
       }
     }
     throw lastErr ?? new Error("Scan failed after retries");
@@ -257,8 +246,20 @@ export default function ScanClient({
       const file = files[i];
       const label = file.name || `Photo ${i + 1}`;
       try {
-        const res = await scanWithRetry(file);
+        // Compress once, then reuse the same file for both the scan upload and
+        // the on-screen thumbnail (it used to be compressed twice per photo).
+        void diag("compress_start", {
+          file_name: file.name,
+          file_type: file.type,
+          file_size_bytes: file.size,
+        });
         const compressed = await compressImage(file);
+        void diag("compress_done", {
+          file_name: compressed.name,
+          file_type: compressed.type,
+          file_size_bytes: compressed.size,
+        });
+        const res = await scanWithRetry(compressed);
         const reader = await new Promise<string>((resolve) => {
           const r = new FileReader();
           r.onload = () => resolve(r.result as string);

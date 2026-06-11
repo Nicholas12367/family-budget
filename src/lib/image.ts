@@ -81,13 +81,23 @@ function canvasToBlob(
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 
-// Defaults tuned for receipt OCR + Vercel/Supabase free tiers:
-// 1100px is plenty for Gemini to read prices/items reliably;
+// Defaults tuned for receipt OCR + Vercel/Supabase free tiers.
+//
+// We cap WIDTH, not the longest edge. Receipts are tall and narrow; what
+// matters for legibility is horizontal resolution (enough pixels across each
+// line of text), while height scales with how many items are on the receipt.
+// The old "longest-edge = 1100px" rule crushed a long receipt's height down
+// to 1100px, squeezing dozens of rows into a few hundred pixels and rendering
+// the text unreadable — which made the scanner misread or stall on exactly the
+// big receipts it most needed to handle. Capping width at 1000px keeps text
+// crisp while letting tall receipts stay tall (up to maxHeight).
+//
 // quality 0.78 cuts upload bytes ~35% vs 0.85 with no observable accuracy loss.
 export async function compressImage(
   file: File,
-  maxEdge = 1100,
-  quality = 0.78
+  maxWidth = 1000,
+  quality = 0.78,
+  maxHeight = 3500
 ): Promise<File> {
   if (!looksLikeImage(file)) {
     throw new ImageProcessingError({
@@ -123,7 +133,14 @@ export async function compressImage(
     return file;
   }
 
-  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  // Cap width for legibility; cap height only as a safety ceiling so an
+  // extremely long receipt can't balloon the upload. Whichever constraint
+  // bites harder wins, preserving aspect ratio.
+  const scale = Math.min(
+    1,
+    maxWidth / bitmap.width,
+    maxHeight / bitmap.height
+  );
   const w = Math.max(1, Math.round(bitmap.width * scale));
   const h = Math.max(1, Math.round(bitmap.height * scale));
 

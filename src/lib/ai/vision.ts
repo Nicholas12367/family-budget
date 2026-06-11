@@ -96,7 +96,65 @@ const SUPPORTED_GEMINI_MIME = new Set([
   "image/heif",
 ]);
 
-const TIMEOUT_MS = 55_000;
+// Timeout budget. The whole server action runs under a 60s function budget
+// (see `maxDuration` in /scan/page.tsx). Before we ever reach Gemini we run
+// several Supabase pre-checks, and after we have to parse + log. If we let a
+// single Gemini call eat the entire budget, the platform hard-kills the
+// function mid-flight — which bypasses every friendly error message below and
+// surfaces the generic, useless RSC error to the user instead.
+//
+// So we cap the *total* time we'll spend talking to Gemini (across retries)
+// well under the function budget, and give each attempt its own slice. With
+// thinking disabled (below) a big receipt typically returns in 5–15s, leaving
+// comfortable room for one automatic retry on a transient failure.
+const OVERALL_GEMINI_BUDGET_MS = 48_000;
+const PER_ATTEMPT_TIMEOUT_MS = 32_000;
+const MAX_ATTEMPTS = 2;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Best-effort salvage of a truncated Gemini JSON response. A very long
+// receipt can run the model into its output-token cap mid-array; the tail of
+// `line_items` gets cut off, leaving invalid JSON. Rather than failing the
+// whole scan, we keep every COMPLETE line item we did receive and close the
+// structure off. Returns null if the text isn't recoverable this way.
+function repairTruncatedReceiptJson(text: string): string | null {
+  const liKey = text.indexOf('"line_items"');
+  if (liKey === -1) return null;
+  const arrStart = text.indexOf("[", liKey);
+  if (arrStart === -1) return null;
+
+  // Walk the array, tracking brace depth and string state, recording the
+  // index just past the last fully-closed object (depth returns to 1).
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let lastCompleteEnd = -1;
+  for (let i = arrStart; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) lastCompleteEnd = i + 1; // one object fully closed
+    } else if (ch === "]" && depth === 0) {
+      // Array already terminated cleanly — nothing to repair here.
+      lastCompleteEnd = -1;
+      break;
+    }
+  }
+  if (lastCompleteEnd === -1) return null;
+
+  // Rebuild: everything up to the last complete item + close array + object.
+  const head = text.slice(0, lastCompleteEnd);
+  return `${head}]}`;
+}
 
 export async function scanReceipt(
   imageBase64: string,
@@ -155,36 +213,100 @@ export async function scanReceipt(
     generationConfig: {
       responseMimeType: "application/json",
       temperature: 0.1,
+      // Disable "thinking" on gemini-2.5-flash. Its default dynamic thinking
+      // budget adds large, unpredictable latency that scales with receipt
+      // complexity — the single biggest reason long receipts were timing out.
+      // Receipt transcription is a direct extraction task that doesn't benefit
+      // from a reasoning budget, so turning it off makes scans both faster and
+      // far more consistent.
+      thinkingConfig: { thinkingBudget: 0 },
+      // A long receipt (50+ line items) produces a large JSON payload. Without
+      // a high cap Gemini truncates mid-array at its default output limit,
+      // yielding invalid JSON that fails to parse — a failure mode unique to
+      // big receipts. 16K output tokens comfortably covers even very long
+      // receipts; unused budget costs nothing.
+      maxOutputTokens: 16384,
     },
   };
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  // Talk to Gemini with a total time budget shared across attempts. We retry
+  // once on transient failures (timeout, network blip, 5xx) as long as the
+  // budget allows — this recovers the intermittent slow calls that used to
+  // fail the scan outright, without risking a function hard-kill.
+  const geminiStart = Date.now();
+  let res: Response | null = null;
+  let timedOut = false;
+  let networkFailed = false;
 
-  let res: Response;
-  try {
-    res = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    if ((e as { name?: string }).name === "AbortError") {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const remaining = OVERALL_GEMINI_BUDGET_MS - (Date.now() - geminiStart);
+    if (remaining <= 3_000) break; // not enough budget for a meaningful try
+    const attemptTimeout = Math.min(PER_ATTEMPT_TIMEOUT_MS, remaining);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), attemptTimeout);
+    try {
+      const r = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      // Retry transient upstream errors (502/503/504) if budget remains.
+      const budgetLeft = OVERALL_GEMINI_BUDGET_MS - (Date.now() - geminiStart);
+      if (
+        r.status >= 500 &&
+        attempt < MAX_ATTEMPTS &&
+        budgetLeft > 5_000
+      ) {
+        await r.body?.cancel?.().catch(() => {});
+        await sleep(800);
+        continue;
+      }
+      res = r;
+      timedOut = false;
+      networkFailed = false;
+      break;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      const isAbort = (e as { name?: string }).name === "AbortError";
+      timedOut = isAbort;
+      networkFailed = !isAbort;
+      const budgetLeft = OVERALL_GEMINI_BUDGET_MS - (Date.now() - geminiStart);
+      // Retry network errors (and only network errors) if there's room. A
+      // timeout means this attempt already consumed its full slice, so we
+      // only retry it when a healthy chunk of the overall budget remains.
+      const room = isAbort ? 8_000 : 4_000;
+      if (attempt < MAX_ATTEMPTS && budgetLeft > room) {
+        if (!isAbort) await sleep(800);
+        continue;
+      }
+    }
+  }
+
+  if (!res) {
+    if (timedOut) {
       logErrorCode = "timeout";
       fail(
-        "The receipt scan took too long (over 55 seconds). The photo may be very large or the AI service is slow — try again, or use a clearer/cropped photo.",
+        "The receipt scan took too long. The photo may be very large or the AI service is busy — try again, or use a clearer/cropped photo.",
         "timeout"
       );
     }
-    logErrorCode = "fetch_failed";
+    if (networkFailed) {
+      logErrorCode = "fetch_failed";
+      fail(
+        "Couldn't reach the receipt scanning service. Check your connection and try again."
+      );
+    }
+    // Budget exhausted before any attempt could complete.
+    logErrorCode = "timeout";
     fail(
-      "Couldn't reach the receipt scanning service. Check your connection and try again."
+      "The receipt scan took too long. The photo may be very large or the AI service is busy — try again, or use a clearer/cropped photo.",
+      "timeout"
     );
-    // unreachable — fail throws
-    return undefined as never;
-  } finally {
-    clearTimeout(timeoutId);
+    return undefined as never; // unreachable — fail throws
   }
 
   httpStatus = res.status;
@@ -235,12 +357,26 @@ export async function scanReceipt(
     logErrorCode = "bad_json";
     fail("The AI returned a malformed response. Try retaking the photo.");
   }
-  const text = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })
-    ?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const candidate = (
+    data as {
+      candidates?: Array<{
+        finishReason?: string;
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+    }
+  )?.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  const text = candidate?.content?.parts?.[0]?.text;
+  // A truncated response (model hit its output cap on a very long receipt)
+  // leaves invalid JSON. We try to salvage the complete line items below, so
+  // only treat this as a hard failure if there's genuinely no text at all.
+  const truncated = finishReason === "MAX_TOKENS";
   if (!text) {
-    logErrorCode = "empty_response";
+    logErrorCode = truncated ? "truncated_empty" : "empty_response";
     fail(
-      "The AI couldn't extract any items from this photo. Make sure the receipt is in focus, well-lit, and not cut off."
+      truncated
+        ? "That receipt was too long for the scanner to read in one pass. Try splitting it into two photos (top half and bottom half) and scanning each."
+        : "The AI couldn't extract any items from this photo. Make sure the receipt is in focus, well-lit, and not cut off."
     );
   }
 
@@ -248,20 +384,41 @@ export async function scanReceipt(
   try {
     parsed = JSON.parse(text!);
   } catch {
+    // First try the simplest recovery: grab the outermost {...} block.
+    let recovered: string | null = null;
     const match = text!.match(/\{[\s\S]*\}/);
-    if (!match) {
-      logErrorCode = "no_json_in_text";
+    if (match) recovered = match[0];
+    // If the response was truncated mid-array, the brace match above won't be
+    // valid JSON — fall back to rebuilding from the complete line items.
+    if (truncated || !recovered) {
+      const repaired = repairTruncatedReceiptJson(text!);
+      if (repaired) recovered = repaired;
+    }
+    if (!recovered) {
+      logErrorCode = truncated ? "truncated_unrecoverable" : "no_json_in_text";
       fail(
-        "The AI didn't return structured data for this receipt. Try a clearer photo."
+        truncated
+          ? "That receipt was too long for the scanner to read in one pass. Try splitting it into two photos (top half and bottom half) and scanning each."
+          : "The AI didn't return structured data for this receipt. Try a clearer photo."
       );
     }
     try {
-      parsed = JSON.parse(match![0]);
+      parsed = JSON.parse(recovered!);
     } catch {
-      logErrorCode = "parse_failed";
-      fail(
-        "Couldn't parse the receipt data. Try a clearer photo or retake."
-      );
+      // Last resort: try the truncation repair even if we got here via the
+      // brace-match path (the matched block may itself be truncated).
+      const repaired = repairTruncatedReceiptJson(text!);
+      if (repaired) {
+        try {
+          parsed = JSON.parse(repaired);
+        } catch {
+          logErrorCode = "parse_failed";
+          fail("Couldn't parse the receipt data. Try a clearer photo or retake.");
+        }
+      } else {
+        logErrorCode = "parse_failed";
+        fail("Couldn't parse the receipt data. Try a clearer photo or retake.");
+      }
     }
   }
 
