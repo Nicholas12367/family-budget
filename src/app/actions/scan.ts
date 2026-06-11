@@ -124,7 +124,21 @@ export async function scanReceiptAction(
       };
     }
 
-    const userRecent = await userScansInLast24h(user.id).catch(() => 0);
+    // These pre-checks are independent reads. Running them in parallel (rather
+    // than four sequential Supabase round-trips) reclaims a chunk of the 60s
+    // function budget for the Gemini call itself — important headroom on big
+    // receipts that legitimately take longer to read.
+    const requestHash = hashImageBase64(base64);
+    const [userRecent, recentScans, duplicate, catsRes] = await Promise.all([
+      userScansInLast24h(user.id).catch(() => 0),
+      scansInLast24h().catch(() => 0),
+      isDuplicateScan(user.id, requestHash).catch(() => false),
+      supabase
+        .from("categories")
+        .select("name")
+        .eq("user_id", user.id),
+    ]);
+
     if (userRecent >= PER_USER_DAILY_SCAN_CAP) {
       await logScan({
         userId: user.id,
@@ -140,7 +154,6 @@ export async function scanReceiptAction(
       };
     }
 
-    const recentScans = await scansInLast24h().catch(() => 0);
     if (recentScans >= SOFT_DAILY_SCAN_CAP) {
       await logScan({
         userId: user.id,
@@ -157,8 +170,7 @@ export async function scanReceiptAction(
       };
     }
 
-    const requestHash = hashImageBase64(base64);
-    if (await isDuplicateScan(user.id, requestHash).catch(() => false)) {
+    if (duplicate) {
       await logScan({
         userId: user.id,
         status: "duplicate_blocked",
@@ -175,11 +187,7 @@ export async function scanReceiptAction(
       };
     }
 
-    const { data: cats } = await supabase
-      .from("categories")
-      .select("name")
-      .eq("user_id", user.id);
-    const categoryNames = (cats ?? []).map((c) => c.name);
+    const categoryNames = (catsRes.data ?? []).map((c) => c.name);
 
     const result = await scanReceipt(
       base64,
