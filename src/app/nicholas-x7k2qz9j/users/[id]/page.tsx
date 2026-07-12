@@ -4,7 +4,9 @@ import { createClient } from "@/lib/supabase/server";
 import { isAdminEmail } from "@/lib/stripe";
 import { loadUserDetail, type AdminStatus } from "@/lib/admin";
 import { adminSuspendUser, adminUnsuspendUser } from "@/app/actions/admin";
+import { listMessagesForUser } from "@/app/actions/messages";
 import DeleteUserButton from "@/components/DeleteUserButton";
+import AdminMessageForm from "@/components/AdminMessageForm";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +52,8 @@ export default async function AdminUserPage({
 
   const detail = await loadUserDetail(id);
   if (!detail) notFound();
+
+  const messages = await listMessagesForUser(id).catch(() => []);
 
   const pill = STATUS_PILL[detail.status] ?? STATUS_PILL.none;
 
@@ -198,6 +202,13 @@ export default async function AdminUserPage({
           Last activity: {fmtDate(detail.last_activity_at)}
         </p>
       </section>
+
+      {/* Direct message */}
+      <AdminMessageForm
+        userId={detail.user_id}
+        email={detail.email ?? ""}
+        initialMessages={messages}
+      />
 
       {/* Recent scans */}
       <section className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-100 p-4 space-y-3">

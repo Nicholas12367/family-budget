@@ -86,3 +86,44 @@ export async function deleteIncome(id: number) {
   revalidatePath("/");
   return { ok: true };
 }
+
+// -------------------------------------------------------------------
+// Savings goals — one annual target per user. Powers the progress bar
+// on the Income widget. Reads degrade to null if the migration hasn't
+// been applied yet, matching listIncome()'s fault tolerance.
+// -------------------------------------------------------------------
+
+const SavingsGoalInput = z.object({
+  year: z.coerce.number().int().min(2000).max(3000),
+  target_amount: z.coerce.number().min(0),
+});
+
+export async function getSavingsGoal(year: number): Promise<number | null> {
+  const { supabase, user } = await getUserOrThrow();
+  const { data, error } = await supabase
+    .from("savings_goals")
+    .select("target_amount")
+    .eq("user_id", user.id)
+    .eq("year", year)
+    .maybeSingle();
+  if (error || !data) return null;
+  return Number(data.target_amount);
+}
+
+export async function setSavingsGoal(input: z.input<typeof SavingsGoalInput>) {
+  const { supabase, user } = await getUserOrThrow();
+  const parsed = SavingsGoalInput.parse(input);
+  const { error } = await supabase
+    .from("savings_goals")
+    .upsert(
+      {
+        user_id: user.id,
+        year: parsed.year,
+        target_amount: parsed.target_amount,
+      },
+      { onConflict: "user_id,year" }
+    );
+  if (error) throw new Error(error.message);
+  revalidatePath("/");
+  return { ok: true };
+}

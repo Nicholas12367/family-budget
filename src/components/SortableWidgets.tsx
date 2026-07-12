@@ -41,9 +41,12 @@ const fmtMoney = (n: number) =>
   "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 // UX:
-//   • Tap a widget body         → its normal action (drill / open editor)
-//   • Tap × in top-right corner → confirm dialog → remove from home screen
-//   • Press-and-hold on body    → drag to reorder (250ms touch / 8px mouse)
+//   • By default the widgets are LOCKED — tapping only drills / opens the
+//     editor, and an accidental scroll never moves them.
+//   • Tap "Edit" to unlock. While unlocked you can drag to reorder and each
+//     card shows a × to remove it. Tap "Done" to lock again.
+//   • Drag activates on 8px mouse move / 150ms touch hold, but only when the
+//     drag handle listeners are attached — which only happens in edit mode.
 //
 // We render the widget contents as a non-button div with role="button" so
 // the native browser button gesture doesn't fight dnd-kit's pointer/touch
@@ -62,16 +65,31 @@ export default function SortableWidgets({
   totals,
   onDrill,
   incomeEntries,
+  onIncomeChange,
   showIncomeWidget,
+  year,
+  month,
+  savedThisYear,
+  savingsGoal,
+  goalYear,
+  onGoalChange,
 }: {
   layout: WidgetLayout;
   totals: Totals;
   onDrill?: (kind: DrillKind) => void;
   incomeEntries: IncomeEntry[];
+  onIncomeChange: (next: IncomeEntry[]) => void;
   showIncomeWidget: boolean;
+  year: number;
+  month: number;
+  savedThisYear: number;
+  savingsGoal: number | null;
+  goalYear: number;
+  onGoalChange: (target: number | null) => void;
 }) {
   const [layout, setLayout] = useState<WidgetLayout>(initialLayout);
   const [dragging, setDragging] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState<WidgetId | null>(
     null
   );
@@ -92,10 +110,10 @@ export default function SortableWidgets({
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
     }),
-    // Mobile: 250ms hold (snappier than before) with tight 5px tolerance —
-    // a quick tap goes through to the widget's onClick, hold-and-drag works.
+    // Mobile: short hold with tight tolerance. Only reachable in edit mode
+    // since the drag listeners aren't attached otherwise.
     useSensor(TouchSensor, {
-      activationConstraint: { delay: 250, tolerance: 5 },
+      activationConstraint: { delay: 150, tolerance: 5 },
     })
   );
 
@@ -131,6 +149,24 @@ export default function SortableWidgets({
 
   return (
     <>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          {editing ? "Drag to rearrange · × to remove" : "Overview"}
+        </p>
+        <button
+          type="button"
+          onClick={() => setEditing((v) => !v)}
+          data-tour-id="widgets-edit-toggle"
+          className={`text-xs font-semibold rounded-full px-3 py-1 transition ${
+            editing
+              ? "bg-emerald-600 text-white hover:bg-emerald-700"
+              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+          }`}
+        >
+          {editing ? "Done" : "Edit"}
+        </button>
+      </div>
+
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -152,6 +188,14 @@ export default function SortableWidgets({
                 totals={totals}
                 onDrill={onDrill}
                 incomeEntries={incomeEntries}
+                onIncomeChange={onIncomeChange}
+                editing={editing}
+                year={year}
+                month={month}
+                savedThisYear={savedThisYear}
+                savingsGoal={savingsGoal}
+                goalYear={goalYear}
+                onGoalChange={onGoalChange}
                 onRequestRemove={() => setConfirmingRemove(id)}
               />
             ))}
@@ -176,12 +220,28 @@ function SortableWidget({
   totals,
   onDrill,
   incomeEntries,
+  onIncomeChange,
+  editing,
+  year,
+  month,
+  savedThisYear,
+  savingsGoal,
+  goalYear,
+  onGoalChange,
   onRequestRemove,
 }: {
   id: WidgetId;
   totals: Totals;
   onDrill?: (kind: DrillKind) => void;
   incomeEntries: IncomeEntry[];
+  onIncomeChange: (next: IncomeEntry[]) => void;
+  editing: boolean;
+  year: number;
+  month: number;
+  savedThisYear: number;
+  savingsGoal: number | null;
+  goalYear: number;
+  onGoalChange: (target: number | null) => void;
   onRequestRemove: () => void;
 }) {
   const {
@@ -191,14 +251,16 @@ function SortableWidget({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id });
+  } = useSortable({ id, disabled: !editing });
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition: transition ?? "transform 180ms cubic-bezier(0.2, 0, 0.2, 1)",
     opacity: isDragging ? 0.85 : 1,
-    touchAction: "none",
-    cursor: isDragging ? "grabbing" : undefined,
+    // Only claim the touch gesture while editing; otherwise let the page
+    // scroll normally so the cards feel pinned in place.
+    touchAction: editing ? "none" : "manipulation",
+    cursor: isDragging ? "grabbing" : editing ? "grab" : undefined,
     zIndex: isDragging ? 50 : undefined,
   };
 
@@ -213,41 +275,52 @@ function SortableWidget({
 
   const fullSpan = id === "income";
 
+  // Drag handle props only attach in edit mode. Without them a scroll or tap
+  // can never start a drag, which is what keeps the widgets "sticky".
+  const dragProps = editing ? { ...attributes, ...listeners } : {};
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
+      {...dragProps}
       className={`relative ${fullSpan ? "col-span-2 md:col-span-4" : ""} ${
         isDragging
           ? "ring-2 ring-emerald-400 ring-offset-2 rounded-2xl shadow-xl scale-[1.02]"
           : ""
-      } transition-transform`}
+      } ${editing && !isDragging ? "animate-[wiggle_0.4s_ease-in-out_infinite]" : ""} transition-transform`}
     >
       <WidgetBody
         id={id}
         totals={totals}
         onDrill={onDrill}
         incomeEntries={incomeEntries}
+        onIncomeChange={onIncomeChange}
         isDragging={isDragging}
+        year={year}
+        month={month}
+        savedThisYear={savedThisYear}
+        savingsGoal={savingsGoal}
+        goalYear={goalYear}
+        onGoalChange={onGoalChange}
       />
 
-      {/* Small × in the top-right. Subtle by default; full red on hover/active.
-          Click → confirm sheet. */}
-      <button
-        type="button"
-        onClick={handleRemoveTap}
-        onPointerDown={(e) => {
-          // Stop the pointerdown from bubbling so dnd-kit never starts a
-          // drag on a tap meant for ×.
-          e.stopPropagation();
-        }}
-        aria-label="Remove from home screen"
-        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-white/85 hover:bg-rose-50 text-gray-500 hover:text-rose-600 flex items-center justify-center text-base leading-none ring-1 ring-black/5 shadow-sm transition opacity-70 hover:opacity-100 z-10"
-      >
-        ×
-      </button>
+      {/* × appears only in edit mode. Click → confirm sheet. */}
+      {editing && (
+        <button
+          type="button"
+          onClick={handleRemoveTap}
+          onPointerDown={(e) => {
+            // Stop the pointerdown from bubbling so dnd-kit never starts a
+            // drag on a tap meant for ×.
+            e.stopPropagation();
+          }}
+          aria-label="Remove from home screen"
+          className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-rose-600 text-white flex items-center justify-center text-base leading-none ring-2 ring-white shadow-md z-10"
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }
@@ -257,13 +330,27 @@ function WidgetBody({
   totals,
   onDrill,
   incomeEntries,
+  onIncomeChange,
   isDragging,
+  year,
+  month,
+  savedThisYear,
+  savingsGoal,
+  goalYear,
+  onGoalChange,
 }: {
   id: WidgetId;
   totals: Totals;
   onDrill?: (kind: DrillKind) => void;
   incomeEntries: IncomeEntry[];
+  onIncomeChange: (next: IncomeEntry[]) => void;
   isDragging: boolean;
+  year: number;
+  month: number;
+  savedThisYear: number;
+  savingsGoal: number | null;
+  goalYear: number;
+  onGoalChange: (target: number | null) => void;
 }) {
   // While actively dragging, suppress the inner widget's click so it
   // doesn't fire when the user releases.
@@ -317,9 +404,16 @@ function WidgetBody({
       return (
         <div data-tour-id="income-widget">
           <IncomeWidget
-            initialEntries={incomeEntries}
+            entries={incomeEntries}
+            onEntriesChange={onIncomeChange}
+            year={year}
+            month={month}
             totalSpent={totals.totalSpent}
             totalFixed={totals.totalFixed}
+            savedThisYear={savedThisYear}
+            savingsGoal={savingsGoal}
+            goalYear={goalYear}
+            onGoalChange={onGoalChange}
           />
         </div>
       );

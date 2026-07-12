@@ -72,7 +72,8 @@ export default function WidgetsPanel({
           <h2 className="font-semibold">Home screen widgets</h2>
           <p className="text-xs text-gray-500">
             Toggle widgets on/off, or tap the arrows to reorder. On the home
-            screen itself, press-and-hold to remove or drag to rearrange.
+            screen itself, tap <span className="font-semibold">Edit</span> to
+            unlock, then drag to rearrange or tap × to remove.
           </p>
         </div>
         <button

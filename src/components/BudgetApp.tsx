@@ -32,6 +32,8 @@ import {
 } from "@/app/actions/categories";
 import CategoryPicker from "./CategoryPicker";
 import SortableWidgets from "./SortableWidgets";
+import { IncomeEditor } from "./IncomeWidget";
+import type { IncomeEntry } from "@/app/actions/income";
 import type { WidgetLayout } from "@/lib/widgets";
 import {
   IconHome,
@@ -48,6 +50,7 @@ import {
   IconPlus,
   IconHelp,
   IconChat,
+  IconBell,
 } from "./Icon";
 
 
@@ -61,7 +64,12 @@ type Props = {
   initialBudgets: Budget[];
   initialPeople: Person[];
   // Income entries — passed straight to the home-screen Income widget.
-  initialIncomeEntries?: import("@/app/actions/income").IncomeEntry[];
+  initialIncomeEntries?: IncomeEntry[];
+  // Annual savings target for the current year (null = not set). Drives the
+  // savings-goal progress bar on the Income widget.
+  initialSavingsGoal?: number | null;
+  // Count of unread admin → user messages. Drives the header inbox badge.
+  unreadMessages?: number;
   // When false (or null in DB), the income widget is hidden from the
   // dashboard. Toggleable from Settings → Widgets.
   showIncomeWidget?: boolean;
@@ -97,6 +105,8 @@ export default function BudgetApp({
   initialBudgets,
   initialPeople,
   initialIncomeEntries = [],
+  initialSavingsGoal = null,
+  unreadMessages = 0,
   showIncomeWidget = true,
   initialWidgetLayout,
   initialReceiptBatches = [],
@@ -124,6 +134,16 @@ export default function BudgetApp({
   useEffect(() => setExpenses(initialExpenses), [initialExpenses]);
   useEffect(() => setFixedCosts(initialFixedCosts), [initialFixedCosts]);
   useEffect(() => setBudgets(initialBudgets), [initialBudgets]);
+
+  // Income + savings goal are lifted here so the Income widget and the
+  // "Add → Sold something" flow stay in sync without a full page refresh.
+  const [incomeEntries, setIncomeEntries] = useState(initialIncomeEntries);
+  const [savingsGoal, setSavingsGoal] = useState<number | null>(
+    initialSavingsGoal
+  );
+  useEffect(() => setIncomeEntries(initialIncomeEntries), [initialIncomeEntries]);
+  useEffect(() => setSavingsGoal(initialSavingsGoal), [initialSavingsGoal]);
+  const [addSaleOpen, setAddSaleOpen] = useState(false);
 
   const people = initialPeople;
   const peopleById = useMemo(() => {
@@ -235,6 +255,27 @@ export default function BudgetApp({
     return m;
   }, [categories]);
 
+  // Annual savings progress for the savings-goal bar. Always the *real*
+  // current calendar year (independent of the month navigator): income
+  // earned this year minus variable spend this year minus the monthly
+  // equivalent of active fixed costs for each month elapsed so far.
+  const goalYear = today.getFullYear();
+  const savedThisYear = useMemo(() => {
+    const monthsElapsed = today.getMonth() + 1; // Jan = 1 … current month
+    const incomeYTD = incomeEntries
+      .filter((e) => new Date(e.date).getUTCFullYear() === goalYear)
+      .reduce((s, e) => s + Number(e.amount), 0);
+    const variableYTD = expenses
+      .filter((e) => new Date(e.date).getUTCFullYear() === goalYear)
+      .reduce((s, e) => s + Number(e.amount), 0);
+    const fixedMonthly = activeFixed.reduce(
+      (s, f) => s + fixedMonthlyEquivalent(f),
+      0
+    );
+    return incomeYTD - variableYTD - fixedMonthly * monthsElapsed;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomeEntries, expenses, activeFixed, goalYear]);
+
   function changeMonth(delta: number) {
     let m = month + delta;
     let y = year;
@@ -254,6 +295,7 @@ export default function BudgetApp({
       <Header
         email={email}
         monthLabel={`${MONTH_NAMES[month]} ${year}`}
+        unreadMessages={unreadMessages}
         onPrevMonth={() => changeMonth(-1)}
         onNextMonth={() => changeMonth(1)}
       />
@@ -323,8 +365,15 @@ export default function BudgetApp({
                 }
                 totals={{ totalSpent, totalBudget, totalFixed, remaining }}
                 onDrill={setDrill}
-                incomeEntries={initialIncomeEntries}
+                incomeEntries={incomeEntries}
+                onIncomeChange={setIncomeEntries}
                 showIncomeWidget={showIncomeWidget}
+                year={year}
+                month={month}
+                savedThisYear={savedThisYear}
+                savingsGoal={savingsGoal}
+                goalYear={goalYear}
+                onGoalChange={setSavingsGoal}
               />
             }
           />
@@ -636,7 +685,19 @@ export default function BudgetApp({
         onAddExpense={() => setEditExpense("new")}
         onAddFixed={() => setEditFixed("new")}
         onAddBudget={() => setTab("budgets")}
+        onAddSale={() => setAddSaleOpen(true)}
       />
+
+      {addSaleOpen && (
+        <IncomeEditor
+          saleMode
+          entries={incomeEntries}
+          year={year}
+          month={month}
+          onChange={setIncomeEntries}
+          onClose={() => setAddSaleOpen(false)}
+        />
+      )}
       <div className="h-28 md:hidden" aria-hidden="true" />
     </div>
   );
@@ -645,11 +706,13 @@ export default function BudgetApp({
 function Header({
   email,
   monthLabel,
+  unreadMessages = 0,
   onPrevMonth,
   onNextMonth,
 }: {
   email: string;
   monthLabel: string;
+  unreadMessages?: number;
   onPrevMonth: () => void;
   onNextMonth: () => void;
 }) {
@@ -684,6 +747,22 @@ function Header({
           </div>
         </div>
         <div className="flex gap-1.5 items-center">
+          <Link
+            href="/inbox"
+            aria-label={
+              unreadMessages > 0
+                ? `Messages (${unreadMessages} unread)`
+                : "Messages"
+            }
+            className="relative w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700 mr-0.5"
+          >
+            <IconBell size={16} />
+            {unreadMessages > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-4 text-center ring-2 ring-white">
+                {unreadMessages > 9 ? "9+" : unreadMessages}
+              </span>
+            )}
+          </Link>
           <button
             onClick={onPrevMonth}
             className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700"
@@ -813,8 +892,9 @@ function Dashboard({
   onEditExpense: (e: Expense) => void;
   onDrill?: (kind: DrillKind) => void;
   onCategoryDrill?: (categoryId: number) => void;
-  // Sortable widgets grid (4 stat cards + optional income). Long-press to
-  // remove a widget; drag to reorder. Re-add hidden widgets in Settings.
+  // Sortable widgets grid (4 stat cards + optional income). Locked by
+  // default; tap Edit to drag-reorder or remove. Re-add hidden widgets in
+  // Settings.
   widgets: React.ReactNode;
 }) {
   const ranked = useMemo(() => {
@@ -846,8 +926,8 @@ function Dashboard({
 
   return (
     <section className="space-y-4">
-      {/* 4 stat cards + (optional) income widget — drag to reorder,
-          long-press to remove. Layout persists per user. */}
+      {/* 4 stat cards + (optional) income widget — locked by default; tap
+          Edit to drag-reorder or remove. Layout persists per user. */}
       {widgets}
 
       <div className="grid md:grid-cols-2 gap-4">
@@ -3311,6 +3391,7 @@ function BottomNav({
   onAddExpense,
   onAddFixed,
   onAddBudget,
+  onAddSale,
 }: {
   currentTab: Tab;
   onTab: (t: Tab) => void;
@@ -3318,6 +3399,7 @@ function BottomNav({
   onAddExpense: () => void;
   onAddFixed: () => void;
   onAddBudget: () => void;
+  onAddSale: () => void;
 }) {
   const [addOpen, setAddOpen] = useState(false);
 
@@ -3409,6 +3491,20 @@ function BottomNav({
                 </span>
                 <span className="block text-xs text-sky-700">
                   Recurring bill (rent, subscription, insurance)
+                </span>
+              </span>
+            </button>
+            <button
+              onClick={() => pick(onAddSale)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-50 hover:bg-amber-100 ring-1 ring-amber-100"
+            >
+              <span className="text-2xl">🏷️</span>
+              <span className="flex-1 text-left">
+                <span className="block font-semibold text-amber-900">
+                  Sold something
+                </span>
+                <span className="block text-xs text-amber-700">
+                  Adds to this month's income (couch, bike, etc.)
                 </span>
               </span>
             </button>
