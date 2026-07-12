@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fmt } from "@/lib/money";
 import { compressImage, ImageProcessingError } from "@/lib/image";
 import type { Category, Person, ScanResult } from "@/lib/types";
@@ -11,7 +11,14 @@ import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
 import { logScanUploadStep } from "@/app/actions/scan-diag";
 import CategoryPicker from "./CategoryPicker";
 import PersonSelector from "./PersonSelector";
+import CameraCapture from "./CameraCapture";
 import { IconArrowLeft, IconCamera } from "./Icon";
+
+// How many times a single photo is retried automatically before we surface an
+// error and offer a manual retry. Generous so a flaky network or a slow AI
+// call resolves itself, but bounded so a genuinely unreadable photo can't burn
+// through the daily scan cap in a loop.
+const MAX_AUTO_ATTEMPTS = 5;
 
 // --- Mobile diagnostics helpers ---
 // Samsung Internet, older Android WebKit, and various Chrome forks all have
@@ -146,10 +153,32 @@ export default function ScanClient({
   const [cameraInputKey, setCameraInputKey] = useState(0);
   const [galleryInputKey, setGalleryInputKey] = useState(0);
   const [busyHint, setBusyHint] = useState<string | null>(null);
+  // Shown inside the progress card while a photo is being auto-retried.
+  const [attemptNote, setAttemptNote] = useState<string | null>(null);
   const [showManualEntryFallback, setShowManualEntryFallback] = useState(false);
+  // Live in-app camera. Opens automatically so tapping "Scan" jumps straight
+  // to taking a photo. If the device/browser can't do getUserMedia we fall
+  // back to the classic file-input buttons.
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraUsable, setCameraUsable] = useState(true);
 
   const review = reviews[activeIdx] ?? null;
   const hasReceipts = reviews.length > 0;
+
+  // Auto-launch the camera on first load when there's nothing to review yet.
+  useEffect(() => {
+    if (
+      cameraUsable &&
+      reviews.length === 0 &&
+      !busy &&
+      typeof navigator !== "undefined" &&
+      typeof navigator.mediaDevices?.getUserMedia === "function"
+    ) {
+      setCameraOpen(true);
+    }
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function pickCategoryId(name: string): number {
     const lower = name.trim().toLowerCase();
@@ -212,23 +241,52 @@ export default function ScanClient({
     return res.result;
   }
 
-  // Run with one client-side retry on transient errors. The server already
-  // retries the Gemini call internally within its time budget, so a single
-  // extra attempt here is enough to ride out a dropped upload — more than that
-  // just re-uploads the image and burns quota for no benefit. Errors with a
-  // clear user-facing cause (rate limits, bad image format, too long) are
-  // surfaced immediately without retry.
+  // Errors that mean "this photo/effort can't succeed no matter how many times
+  // we retry" — retrying just wastes the user's daily scan quota. Everything
+  // else (network blips, timeouts, AI hiccups, unreadable-this-time results)
+  // is retried automatically up to MAX_AUTO_ATTEMPTS.
+  function isPermanent(err: Error & { code?: string }): boolean {
+    const code = err.code ?? "";
+    if (
+      [
+        "too_large",
+        "bad_mime",
+        "no_file",
+        "empty_file",
+        "user_daily_cap",
+        "daily_cap",
+        "duplicate",
+      ].includes(code)
+    ) {
+      return true;
+    }
+    // ImageProcessingError (decode/encode/too-large) is a client-side dead end.
+    if (err instanceof ImageProcessingError) return true;
+    return false;
+  }
+
+  // Keep retrying a photo until it scans, with backoff and a visible attempt
+  // counter. The merged server fixes already retry the Gemini call within the
+  // request; this outer loop rides out anything that survives that.
   async function scanWithRetry(compressed: File): Promise<ScanResult> {
-    const transientPattern =
-      /(?:network|fetch|503|502|temporarily|service is temporarily|reach the receipt scanning service)/i;
-    let lastErr: Error | null = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let lastErr: (Error & { code?: string }) | null = null;
+    for (let attempt = 1; attempt <= MAX_AUTO_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        setAttemptNote(
+          `That didn't come through — retrying (attempt ${attempt} of ${MAX_AUTO_ATTEMPTS})…`
+        );
+      }
       try {
         return await scanOnce(compressed);
       } catch (e) {
-        lastErr = e as Error;
-        if (!transientPattern.test(lastErr.message ?? "")) throw lastErr;
-        if (attempt < 1) await new Promise((r) => setTimeout(r, 1000));
+        lastErr = e as Error & { code?: string };
+        if (isPermanent(lastErr)) throw lastErr;
+        if (attempt < MAX_AUTO_ATTEMPTS) {
+          // Backoff: 0.8s, 1.6s, 2.4s, 3.2s (capped).
+          await new Promise((r) =>
+            setTimeout(r, Math.min(800 * attempt, 3200))
+          );
+        }
       }
     }
     throw lastErr ?? new Error("Scan failed after retries");
@@ -238,6 +296,7 @@ export default function ScanClient({
     if (!files.length) return;
     setError(null);
     setShowManualEntryFallback(false);
+    setAttemptNote(null);
     setBusy(true);
     setProgress({ done: 0, total: files.length });
     const next: ReviewState[] = [];
@@ -287,6 +346,7 @@ export default function ScanClient({
         });
         failures.push(`${label}: ${msg}`);
       } finally {
+        setAttemptNote(null);
         setProgress({ done: i + 1, total: files.length });
       }
     }
@@ -307,6 +367,7 @@ export default function ScanClient({
     }
     setBusy(false);
     setBusyHint(null);
+    setAttemptNote(null);
     setProgress(null);
   }
 
@@ -348,6 +409,28 @@ export default function ScanClient({
     processFiles(Array.from(fileList));
     if (galleryRef.current) galleryRef.current.value = "";
     setGalleryInputKey((k) => k + 1);
+  }
+
+  // --- In-app camera handlers ---
+  function onCameraCapture(file: File) {
+    setCameraOpen(false);
+    setBusyHint("Got the photo — scanning…");
+    void diag("change_fired", { detail: "in-app camera capture" });
+    processFiles([file]);
+  }
+
+  function onCameraGallery(files: File[]) {
+    setCameraOpen(false);
+    setBusyHint(
+      `Got ${files.length} photo${files.length === 1 ? "" : "s"} — scanning…`
+    );
+    processFiles(files);
+  }
+
+  function onCameraUnavailable(reason: string) {
+    void diag("change_empty", { detail: `camera unavailable: ${reason}` });
+    setCameraUsable(false);
+    setCameraOpen(false);
   }
 
   const selectedLines = useMemo(
@@ -532,6 +615,15 @@ export default function ScanClient({
       className="max-w-3xl mx-auto px-4 pb-32 space-y-4"
       style={{ paddingTop: "calc(env(safe-area-inset-top) + 1.25rem)" }}
     >
+      {cameraOpen && (
+        <CameraCapture
+          onCapture={onCameraCapture}
+          onPickFromGallery={onCameraGallery}
+          onClose={() => setCameraOpen(false)}
+          onUnavailable={onCameraUnavailable}
+        />
+      )}
+
       <div className="flex items-center gap-3">
         <button
           type="button"
@@ -629,6 +721,12 @@ export default function ScanClient({
               }}
             />
           </div>
+          {attemptNote && (
+            <p className="text-xs text-amber-700 flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+              {attemptNote}
+            </p>
+          )}
         </div>
       )}
 
@@ -670,7 +768,10 @@ export default function ScanClient({
           <div className="grid gap-3">
             <button
               type="button"
-              onClick={() => cameraRef.current?.click()}
+              onClick={() => {
+                if (cameraUsable) setCameraOpen(true);
+                else cameraRef.current?.click();
+              }}
               disabled={busy}
               className="px-4 py-5 rounded-2xl bg-emerald-500 text-white font-semibold cursor-pointer hover:bg-emerald-600 active:scale-[0.99] transition disabled:opacity-50 inline-flex items-center justify-center gap-2"
             >
