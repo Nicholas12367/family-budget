@@ -84,13 +84,13 @@ const STEPS: TourStep[] = [
   },
   {
     title: "Income & savings",
-    body: "Below the 4 stat cards there's an Income widget. Log paychecks as they come — it shows what you Made, Spent, and Saved each month.",
+    body: "Below the 4 stat cards there's an Income widget. Tap “Add income” to log a paycheck — it shows what you Made, Spent, and Saved for the month you're viewing, and tracks progress toward a yearly savings goal. Sold something? Use the Add button to add it here too.",
     selector: "[data-tour-id='income-widget']",
     preNav: { event: "tour:goto-tab", detail: "dashboard" },
   },
   {
     title: "Edit your home screen",
-    body: "Press-and-hold any widget to remove it, or drag to reorder. Recover hidden widgets anytime from Settings → Home screen widgets.",
+    body: "Your cards stay locked so a stray scroll never moves them. Tap Edit to unlock, then drag to reorder or tap × to remove — tap Done when finished. Recover hidden widgets anytime from Settings → Home screen widgets.",
     selector: "[data-tour-id='widgets-grid']",
     preNav: { event: "tour:goto-tab", detail: "dashboard" },
   },

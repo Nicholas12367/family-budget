@@ -32,3 +32,13 @@
 }
 
 dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+
+/* Subtle "jiggle" applied to home-screen widgets while in Edit mode, so it
+   reads as editable (iOS-style). Referenced by animate-[wiggle_...]. */
+@keyframes wiggle {
+  0%, 100% { transform: rotate(-0.6deg); }
+  50% { transform: rotate(0.6deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[wiggle_0\.4s_ease-in-out_infinite\] { animation: none !important; }
+}
