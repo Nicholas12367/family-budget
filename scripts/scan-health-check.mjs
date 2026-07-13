@@ -17,7 +17,6 @@
 //   SCAN_HEALTH_MIN_FAILS    default 5    — absolute failure count that alerts
 //                                            regardless of rate
 import { writeFileSync, appendFileSync } from "node:fs";
-import { createClient } from "@supabase/supabase-js";
 
 // Best-effort load of .env.local for local runs; harmless/no-op in CI.
 try {
@@ -48,22 +47,30 @@ const REACHED = new Set(["ok", "error", "timeout", "rate_limited"]);
 // Of those, the ones a code fix can plausibly address.
 const ACTIONABLE_FAIL = new Set(["error", "timeout"]);
 
-const svc = createClient(url, key, { auth: { persistSession: false } });
 const since = new Date(Date.now() - WINDOW_MIN * 60 * 1000).toISOString();
 
-const { data, error } = await svc
-  .from("gemini_scan_log")
-  .select("status, http_status, error_code, error_message, duration_ms, created_at")
-  .gte("created_at", since)
-  .order("created_at", { ascending: false })
-  .limit(5000);
-
-if (error) {
-  console.error("gemini_scan_log query failed:", error.message);
+// Query PostgREST directly with fetch instead of the supabase-js client:
+// supabase-js eagerly initializes a realtime client that needs a native
+// WebSocket, which Node < 22 lacks — that crashed this job on the CI runner.
+// A plain REST GET has no such dependency and works on any Node version.
+const restBase = url.replace(/\/$/, "");
+const params = new URLSearchParams({
+  select: "status,http_status,error_code,error_message,duration_ms,created_at",
+  created_at: `gte.${since}`,
+  order: "created_at.desc",
+  limit: "5000",
+});
+const res = await fetch(`${restBase}/rest/v1/gemini_scan_log?${params}`, {
+  headers: { apikey: key, Authorization: `Bearer ${key}` },
+});
+if (!res.ok) {
+  console.error(
+    `gemini_scan_log query failed: HTTP ${res.status} — ${await res.text()}`
+  );
   process.exit(1);
 }
 
-const rows = data ?? [];
+const rows = (await res.json()) ?? [];
 const reached = rows.filter((r) => REACHED.has(r.status));
 const fails = reached.filter((r) => ACTIONABLE_FAIL.has(r.status));
 const denom = reached.length;
