@@ -15,6 +15,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -90,6 +91,7 @@ export default function SortableWidgets({
 }) {
   const [layout, setLayout] = useState<WidgetLayout>(initialLayout);
   const [dragging, setDragging] = useState(false);
+  const [activeId, setActiveId] = useState<WidgetId | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState<WidgetId | null>(
     null
@@ -111,10 +113,12 @@ export default function SortableWidgets({
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
     }),
-    // Mobile: short hold with tight tolerance. Only reachable in edit mode
-    // since the drag listeners aren't attached otherwise.
+    // Mobile: press-and-hold ~180ms to pick a tile up; a generous tolerance
+    // means a slightly shaky thumb during the hold won't cancel it. Only
+    // reachable in edit mode since the drag listeners aren't attached
+    // otherwise.
     useSensor(TouchSensor, {
-      activationConstraint: { delay: 150, tolerance: 5 },
+      activationConstraint: { delay: 180, tolerance: 10 },
     })
   );
 
@@ -126,6 +130,7 @@ export default function SortableWidgets({
 
   function handleDragEnd(e: DragEndEvent) {
     setDragging(false);
+    setActiveId(null);
     if (!e.over || e.over.id === e.active.id) return;
     const oldIndex = layout.order.indexOf(e.active.id as WidgetId);
     const newIndex = layout.order.indexOf(e.over.id as WidgetId);
@@ -171,9 +176,15 @@ export default function SortableWidgets({
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
-        onDragStart={() => setDragging(true)}
+        onDragStart={(e: DragStartEvent) => {
+          setDragging(true);
+          setActiveId(e.active.id as WidgetId);
+        }}
         onDragEnd={handleDragEnd}
-        onDragCancel={() => setDragging(false)}
+        onDragCancel={() => {
+          setDragging(false);
+          setActiveId(null);
+        }}
       >
         <SortableContext items={visible} strategy={rectSortingStrategy}>
           <div
@@ -191,6 +202,7 @@ export default function SortableWidgets({
                 incomeEntries={incomeEntries}
                 onIncomeChange={onIncomeChange}
                 editing={editing}
+                dragging={dragging}
                 year={year}
                 month={month}
                 savedThisYear={savedThisYear}
@@ -202,7 +214,32 @@ export default function SortableWidgets({
             ))}
           </div>
         </SortableContext>
-        <DragOverlay />
+        {/* The dragged tile is rendered here and follows the finger 1:1 (no
+            layout constraints, no transition lag), while the original stays as
+            a dimmed placeholder. This is what makes dragging feel smooth. */}
+        <DragOverlay adjustScale={false} zIndex={60}>
+          {activeId ? (
+            <div
+              className={`rounded-2xl shadow-2xl ring-2 ring-emerald-400 cursor-grabbing ${
+                activeId === "income" ? "" : ""
+              }`}
+            >
+              <WidgetBody
+                id={activeId}
+                totals={totals}
+                incomeEntries={incomeEntries}
+                onIncomeChange={onIncomeChange}
+                isDragging
+                year={year}
+                month={month}
+                savedThisYear={savedThisYear}
+                savingsGoal={savingsGoal}
+                goalYear={goalYear}
+                onGoalChange={onGoalChange}
+              />
+            </div>
+          ) : null}
+        </DragOverlay>
       </DndContext>
 
       {confirmingRemove && (
@@ -223,6 +260,7 @@ function SortableWidget({
   incomeEntries,
   onIncomeChange,
   editing,
+  dragging,
   year,
   month,
   savedThisYear,
@@ -237,6 +275,7 @@ function SortableWidget({
   incomeEntries: IncomeEntry[];
   onIncomeChange: (next: IncomeEntry[]) => void;
   editing: boolean;
+  dragging: boolean;
   year: number;
   month: number;
   savedThisYear: number;
@@ -256,13 +295,16 @@ function SortableWidget({
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
-    transition: transition ?? "transform 180ms cubic-bezier(0.2, 0, 0.2, 1)",
-    opacity: isDragging ? 0.85 : 1,
+    // Use dnd-kit's own transition (smoothly shifts neighbors to make room;
+    // it's null on the item actually being dragged). Do NOT add a blanket
+    // transform transition — that made the dragged tile lag behind the finger.
+    transition,
+    // The dragged tile lives in the DragOverlay; leave a faint placeholder.
+    opacity: isDragging ? 0.35 : 1,
     // Only claim the touch gesture while editing; otherwise let the page
     // scroll normally so the cards feel pinned in place.
     touchAction: editing ? "none" : "manipulation",
-    cursor: isDragging ? "grabbing" : editing ? "grab" : undefined,
-    zIndex: isDragging ? 50 : undefined,
+    cursor: editing ? (isDragging ? "grabbing" : "grab") : undefined,
   };
 
   // The × button stops both pointerdown and click propagation so dnd-kit
@@ -287,9 +329,13 @@ function SortableWidget({
       {...dragProps}
       className={`relative ${fullSpan ? "col-span-2 md:col-span-4" : ""} ${
         isDragging
-          ? "ring-2 ring-emerald-400 ring-offset-2 rounded-2xl shadow-xl scale-[1.02]"
+          ? "rounded-2xl outline-dashed outline-2 outline-emerald-300"
           : ""
-      } ${editing && !isDragging ? "animate-[wiggle_0.4s_ease-in-out_infinite]" : ""} transition-transform`}
+      } ${
+        editing && !dragging
+          ? "animate-[wiggle_0.4s_ease-in-out_infinite]"
+          : ""
+      }`}
     >
       <WidgetBody
         id={id}
