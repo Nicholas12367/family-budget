@@ -41,18 +41,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
 
       - name: Install Vercel CLI
         run: npm i -g vercel@latest
 
-      # Pull the project's production settings + env vars from Vercel so the
-      # build matches what the dashboard would produce.
-      - name: Pull Vercel env
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-
-      - name: Build
-        run: vercel build --prod --token="$VERCEL_TOKEN"
-
-      - name: Deploy prebuilt to production
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+      # Deploy the source and let Vercel build it server-side. This is the
+      # reliable path: Vercel injects the project's Production environment
+      # variables at build time, so NEXT_PUBLIC_* values (e.g. the Supabase
+      # URL/anon key) get inlined correctly.
+      #
+      # Do NOT switch this to the `vercel build` + `vercel deploy --prebuilt`
+      # flow: a prebuilt build on a clean CI machine has no .env.local, so the
+      # NEXT_PUBLIC_* vars never get baked in and every SSR route 500s with
+      # "Your project's URL and Key are required to create a Supabase client".
+      # VERCEL_ORG_ID / VERCEL_PROJECT_ID (from secrets) link the project.
+      - name: Deploy to production (Vercel builds with project env)
+        run: vercel deploy --prod --yes --token="$VERCEL_TOKEN"
