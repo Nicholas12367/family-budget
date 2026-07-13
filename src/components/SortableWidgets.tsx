@@ -99,6 +99,16 @@ export default function SortableWidgets({
 
   useEffect(() => setLayout(initialLayout), [initialLayout]);
 
+  // While editing, lock touch scrolling so dragging a tile never scrolls the
+  // page out from under your finger. Touch only — desktop wheel scrolling is
+  // unaffected. Cleared as soon as you tap Done.
+  useEffect(() => {
+    if (!editing) return;
+    const prevent = (e: TouchEvent) => e.preventDefault();
+    document.addEventListener("touchmove", prevent, { passive: false });
+    return () => document.removeEventListener("touchmove", prevent);
+  }, [editing]);
+
   const visible = useMemo(() => {
     const hidden = new Set(layout.hidden);
     return layout.order.filter((id) => {
@@ -176,6 +186,7 @@ export default function SortableWidgets({
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        autoScroll={false}
         onDragStart={(e: DragStartEvent) => {
           setDragging(true);
           setActiveId(e.active.id as WidgetId);
