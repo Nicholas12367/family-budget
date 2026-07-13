@@ -2,6 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getUserOrThrow } from "./auth";
+import type { SavingsGoal, GoalPeriod } from "@/lib/income";
 
 const IncomeInput = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -96,18 +97,27 @@ export async function deleteIncome(id: number) {
 const SavingsGoalInput = z.object({
   year: z.coerce.number().int().min(2000).max(3000),
   target_amount: z.coerce.number().min(0),
+  period: z.enum(["monthly", "yearly"]).optional().default("yearly"),
 });
 
-export async function getSavingsGoal(year: number): Promise<number | null> {
+export async function getSavingsGoal(
+  year: number
+): Promise<SavingsGoal | null> {
   const { supabase, user } = await getUserOrThrow();
   const { data, error } = await supabase
     .from("savings_goals")
-    .select("target_amount")
+    .select("target_amount, period")
     .eq("user_id", user.id)
     .eq("year", year)
     .maybeSingle();
   if (error || !data) return null;
-  return Number(data.target_amount);
+  const target = Number(data.target_amount);
+  if (!(target > 0)) return null;
+  // `period` column may not exist yet if the migration hasn't run — default.
+  const period: GoalPeriod =
+    (data as { period?: string }).period === "monthly" ? "monthly" : "yearly";
+  const goal: SavingsGoal = { target, period };
+  return goal;
 }
 
 export async function setSavingsGoal(input: z.input<typeof SavingsGoalInput>) {
@@ -120,6 +130,7 @@ export async function setSavingsGoal(input: z.input<typeof SavingsGoalInput>) {
         user_id: user.id,
         year: parsed.year,
         target_amount: parsed.target_amount,
+        period: parsed.period,
       },
       { onConflict: "user_id,year" }
     );

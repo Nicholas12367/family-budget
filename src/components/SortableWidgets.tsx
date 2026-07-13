@@ -27,6 +27,7 @@ import { saveWidgetLayout } from "@/app/actions/widgets";
 import type { WidgetId, WidgetLayout } from "@/lib/widgets";
 import IncomeWidget from "./IncomeWidget";
 import type { IncomeEntry } from "@/app/actions/income";
+import type { SavingsGoal } from "@/lib/income";
 
 type Totals = {
   totalSpent: number;
@@ -83,9 +84,9 @@ export default function SortableWidgets({
   year: number;
   month: number;
   savedThisYear: number;
-  savingsGoal: number | null;
+  savingsGoal: SavingsGoal | null;
   goalYear: number;
-  onGoalChange: (target: number | null) => void;
+  onGoalChange: (goal: SavingsGoal | null) => void;
 }) {
   const [layout, setLayout] = useState<WidgetLayout>(initialLayout);
   const [dragging, setDragging] = useState(false);
@@ -239,9 +240,9 @@ function SortableWidget({
   year: number;
   month: number;
   savedThisYear: number;
-  savingsGoal: number | null;
+  savingsGoal: SavingsGoal | null;
   goalYear: number;
-  onGoalChange: (target: number | null) => void;
+  onGoalChange: (goal: SavingsGoal | null) => void;
   onRequestRemove: () => void;
 }) {
   const {
@@ -348,9 +349,9 @@ function WidgetBody({
   year: number;
   month: number;
   savedThisYear: number;
-  savingsGoal: number | null;
+  savingsGoal: SavingsGoal | null;
   goalYear: number;
-  onGoalChange: (target: number | null) => void;
+  onGoalChange: (goal: SavingsGoal | null) => void;
 }) {
   // While actively dragging, suppress the inner widget's click so it
   // doesn't fire when the user releases.

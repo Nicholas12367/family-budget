@@ -34,6 +34,7 @@ import CategoryPicker from "./CategoryPicker";
 import SortableWidgets from "./SortableWidgets";
 import { IncomeEditor } from "./IncomeWidget";
 import type { IncomeEntry } from "@/app/actions/income";
+import type { SavingsGoal } from "@/lib/income";
 import type { WidgetLayout } from "@/lib/widgets";
 import {
   IconHome,
@@ -67,7 +68,7 @@ type Props = {
   initialIncomeEntries?: IncomeEntry[];
   // Annual savings target for the current year (null = not set). Drives the
   // savings-goal progress bar on the Income widget.
-  initialSavingsGoal?: number | null;
+  initialSavingsGoal?: SavingsGoal | null;
   // Count of unread admin → user messages. Drives the header inbox badge.
   unreadMessages?: number;
   // When false (or null in DB), the income widget is hidden from the
@@ -136,14 +137,14 @@ export default function BudgetApp({
   useEffect(() => setBudgets(initialBudgets), [initialBudgets]);
 
   // Income + savings goal are lifted here so the Income widget and the
-  // "Add → Sold something" flow stay in sync without a full page refresh.
+  // "Add → Add income" flow stay in sync without a full page refresh.
   const [incomeEntries, setIncomeEntries] = useState(initialIncomeEntries);
-  const [savingsGoal, setSavingsGoal] = useState<number | null>(
+  const [savingsGoal, setSavingsGoal] = useState<SavingsGoal | null>(
     initialSavingsGoal
   );
   useEffect(() => setIncomeEntries(initialIncomeEntries), [initialIncomeEntries]);
   useEffect(() => setSavingsGoal(initialSavingsGoal), [initialSavingsGoal]);
-  const [addSaleOpen, setAddSaleOpen] = useState(false);
+  const [addIncomeOpen, setAddIncomeOpen] = useState(false);
 
   const people = initialPeople;
   const peopleById = useMemo(() => {
@@ -685,17 +686,19 @@ export default function BudgetApp({
         onAddExpense={() => setEditExpense("new")}
         onAddFixed={() => setEditFixed("new")}
         onAddBudget={() => setTab("budgets")}
-        onAddSale={() => setAddSaleOpen(true)}
+        onAddIncome={() => setAddIncomeOpen(true)}
       />
 
-      {addSaleOpen && (
+      {addIncomeOpen && (
         <IncomeEditor
-          saleMode
           entries={incomeEntries}
           year={year}
           month={month}
+          savingsGoal={savingsGoal}
+          goalYear={goalYear}
+          onGoalChange={setSavingsGoal}
           onChange={setIncomeEntries}
-          onClose={() => setAddSaleOpen(false)}
+          onClose={() => setAddIncomeOpen(false)}
         />
       )}
       <div className="h-28 md:hidden" aria-hidden="true" />
@@ -3391,7 +3394,7 @@ function BottomNav({
   onAddExpense,
   onAddFixed,
   onAddBudget,
-  onAddSale,
+  onAddIncome,
 }: {
   currentTab: Tab;
   onTab: (t: Tab) => void;
@@ -3399,7 +3402,7 @@ function BottomNav({
   onAddExpense: () => void;
   onAddFixed: () => void;
   onAddBudget: () => void;
-  onAddSale: () => void;
+  onAddIncome: () => void;
 }) {
   const [addOpen, setAddOpen] = useState(false);
 
@@ -3495,16 +3498,16 @@ function BottomNav({
               </span>
             </button>
             <button
-              onClick={() => pick(onAddSale)}
+              onClick={() => pick(onAddIncome)}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-50 hover:bg-amber-100 ring-1 ring-amber-100"
             >
-              <span className="text-2xl">🏷️</span>
+              <span className="text-2xl">💵</span>
               <span className="flex-1 text-left">
                 <span className="block font-semibold text-amber-900">
-                  Sold something
+                  Add Income
                 </span>
                 <span className="block text-xs text-amber-700">
-                  Adds to this month's income (couch, bike, etc.)
+                  Paycheck, sale, side gig, or any money in
                 </span>
               </span>
             </button>

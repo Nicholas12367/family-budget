@@ -7,7 +7,11 @@ import { fmt } from "@/lib/money";
 import { compressImage, ImageProcessingError } from "@/lib/image";
 import type { Category, Person, ScanResult } from "@/lib/types";
 import { isFutureDate, todayLocalISO } from "@/lib/rollover";
-import { saveScannedExpenses, scanReceiptAction } from "@/app/actions/scan";
+import {
+  saveScannedExpenses,
+  saveScannedIncome,
+  scanReceiptAction,
+} from "@/app/actions/scan";
 import { logScanUploadStep } from "@/app/actions/scan-diag";
 import CategoryPicker from "./CategoryPicker";
 import PersonSelector from "./PersonSelector";
@@ -145,6 +149,9 @@ export default function ScanClient({
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkPicked, setBulkPicked] = useState<Set<number>>(new Set());
   const [bulkEditing, setBulkEditing] = useState(false);
+  // Set when the current scan has been recorded as INCOME rather than expenses.
+  // Shows a success card with a "Back to dashboard" action.
+  const [incomeSaved, setIncomeSaved] = useState<number | null>(null);
 
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
@@ -505,6 +512,51 @@ export default function ScanClient({
     }
   }
 
+  // Record the current scan as a single INCOME entry (e.g. a pay stub or a
+  // receipt for something the user sold) instead of expense line items.
+  async function saveCurrentAsIncome() {
+    if (!review) return;
+    const amount = review.result.grand_total || review.result.total;
+    if (!amount || amount <= 0) {
+      setError(
+        "This scan has no total to record as income. Add a total or use Add income by hand."
+      );
+      return;
+    }
+    if (isFutureDate(review.date)) {
+      if (
+        !confirm(
+          `You're setting a date in the future (${review.date}). The income will be filed for that date — save anyway?`
+        )
+      )
+        return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const saveRes = await saveScannedIncome({
+        date: review.date,
+        amount,
+        description: review.merchant.trim() || "Scanned income",
+        source: "scanned",
+      });
+      if (!saveRes.ok) {
+        setError(saveRes.error);
+        setBusy(false);
+        return;
+      }
+      // Drop this receipt from the review stack and show the success state.
+      const nextReviews = reviews.filter((_, i) => i !== activeIdx);
+      setReviews(nextReviews);
+      setActiveIdx(Math.min(activeIdx, Math.max(0, nextReviews.length - 1)));
+      setIncomeSaved(saveRes.amount);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function discardCurrent() {
     if (!review) return;
     if (
@@ -640,6 +692,48 @@ export default function ScanClient({
           </span>
         )}
       </div>
+
+      {incomeSaved !== null && (
+        <div className="bg-emerald-50 ring-1 ring-emerald-200 text-emerald-900 rounded-2xl p-5 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="w-8 h-8 rounded-full bg-emerald-500 text-white inline-flex items-center justify-center shrink-0">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M5 12l5 5L20 7" />
+              </svg>
+            </span>
+            <div>
+              <p className="font-bold">Saved as income</p>
+              <p className="text-sm text-emerald-800/90 tabular-nums">
+                {fmt(incomeSaved)} added to your income.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/"
+              className="inline-flex px-4 py-2 rounded-xl bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600"
+            >
+              Back to dashboard
+            </Link>
+            <button
+              type="button"
+              onClick={() => setIncomeSaved(null)}
+              className="inline-flex px-4 py-2 rounded-xl bg-white text-emerald-700 text-sm font-semibold ring-1 ring-emerald-200 hover:bg-emerald-50"
+            >
+              Scan another
+            </button>
+          </div>
+        </div>
+      )}
 
       {busyHint && !progress && (
         <div className="bg-emerald-50 ring-1 ring-emerald-100 text-emerald-900 rounded-lg p-3 text-sm flex items-center gap-2">
@@ -1322,6 +1416,15 @@ export default function ScanClient({
                   } (${fmt(
                     review.result.grand_total || review.result.total
                   )})`}
+            </button>
+            <button
+              type="button"
+              onClick={saveCurrentAsIncome}
+              disabled={busy}
+              className="w-full mt-2 px-4 py-3 rounded-2xl bg-white text-emerald-700 font-semibold text-sm ring-2 ring-emerald-200 hover:bg-emerald-50 disabled:opacity-50 active:scale-[0.99] transition inline-flex items-center justify-center gap-2"
+            >
+              💰 Save as income instead (
+              {fmt(review.result.grand_total || review.result.total)})
             </button>
             {reviews.length > 1 && (
               <p className="text-center text-xs text-gray-500 mt-2">

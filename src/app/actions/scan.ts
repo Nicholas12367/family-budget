@@ -28,6 +28,17 @@ export type SaveActionResult =
   | { ok: true; count: number }
   | { ok: false; error: string };
 
+export type SaveIncomeActionResult =
+  | { ok: true; amount: number }
+  | { ok: false; error: string };
+
+const SaveIncomeInput = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  amount: z.coerce.number().min(0),
+  description: z.string().max(200).optional().default(""),
+  source: z.string().max(80).optional().default(""),
+});
+
 const SaveInput = z.object({
   merchant: z.string().default(""),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -282,6 +293,48 @@ export async function saveScannedExpenses(
         msg && msg.length < 300
           ? msg
           : "Couldn't save the receipt. Try again, or use Add expense.",
+    };
+  }
+}
+
+// Record a scanned receipt/pay stub as a single income entry instead of as
+// expense line items. Inserts directly into income_entries (mirrors the shape
+// used by createIncome in actions/income.ts) so a pay stub or a receipt for
+// something the user sold lands on the Income widget.
+export async function saveScannedIncome(
+  input: z.input<typeof SaveIncomeInput>
+): Promise<SaveIncomeActionResult> {
+  try {
+    const { supabase, user } = await getUserOrThrow();
+    const parsed = SaveIncomeInput.parse(input);
+
+    const { error } = await supabase.from("income_entries").insert({
+      user_id: user.id,
+      date: parsed.date,
+      amount: parsed.amount,
+      description: parsed.description || null,
+      source: parsed.source || "scanned",
+    });
+    if (error) {
+      console.error("[saveScannedIncome] insert failed:", error);
+      return {
+        ok: false,
+        error: "Couldn't save the income entry. Try again in a moment.",
+      };
+    }
+
+    revalidatePath("/");
+    return { ok: true, amount: parsed.amount };
+  } catch (e) {
+    const err = e as Error;
+    console.error("[saveScannedIncome] unexpected error:", err);
+    const msg = err?.message || "";
+    return {
+      ok: false,
+      error:
+        msg && msg.length < 300
+          ? msg
+          : "Couldn't save the income entry. Try again, or add it by hand.",
     };
   }
 }
