@@ -61,6 +61,8 @@ export default async function HomePage() {
   const showIncomeWidget = profileRow?.show_income_widget ?? true;
   const widgetLayout = normalizeLayout(profileRow?.home_widgets);
   const unreadList = myMessages.filter((m) => !m.read_at);
+  const unreadDirect = unreadList.filter((m) => m.kind !== "broadcast");
+  const unreadBroadcasts = unreadList.filter((m) => m.kind === "broadcast");
 
   return (
     <>
@@ -74,6 +76,7 @@ export default async function HomePage() {
         initialIncomeEntries={incomeRows}
         initialSavingsGoal={savingsGoal}
         unreadMessages={unreadList.length}
+        broadcastUpdates={unreadBroadcasts}
         showIncomeWidget={showIncomeWidget}
         initialWidgetLayout={widgetLayout}
         initialReceiptBatches={receiptBatches ?? []}
@@ -81,7 +84,7 @@ export default async function HomePage() {
       {needsOnboarding ? (
         <OnboardingFlow userId={user.id} />
       ) : (
-        <AppOpenPrompts unreadMessages={unreadList} />
+        <AppOpenPrompts unreadMessages={unreadDirect} />
       )}
     </>
   );

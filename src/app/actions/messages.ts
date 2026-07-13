@@ -14,6 +14,7 @@ export type AdminMessage = {
   url: string | null;
   read_at: string | null;
   created_at: string;
+  kind?: "direct" | "broadcast";
 };
 
 function serviceClient() {

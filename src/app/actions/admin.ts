@@ -41,6 +41,27 @@ async function targetEmailFor(userId: string): Promise<string | null> {
   return data?.user?.email ?? null;
 }
 
+// Every user id, paginated. Used to drop a broadcast into everyone's in-app
+// inbox so it's visible even without notifications.
+async function listAllUserIds(): Promise<string[]> {
+  const supa = serviceClient();
+  const ids: string[] = [];
+  let page = 1;
+  while (page < 100) {
+    const { data, error } = await supa.auth.admin.listUsers({
+      page,
+      perPage: 1000,
+    });
+    if (error) break;
+    const users = data?.users ?? [];
+    if (!users.length) break;
+    for (const u of users) ids.push(u.id);
+    if (users.length < 1000) break;
+    page++;
+  }
+  return ids;
+}
+
 // Bans the user for ~100 years. Reversible via adminUnsuspendUser.
 export async function adminSuspendUser(userId: string, reason: string) {
   const actor = await assertAdmin();
@@ -128,6 +149,34 @@ export async function broadcastNotification(input: {
     details: { title, body, url },
   });
 
+  // Persist the broadcast into every user's in-app inbox so it's visible even
+  // to people without notifications — powers the dashboard update banner and
+  // the bell badge. Best-effort: a failure here must not block the push.
+  let inApp = 0;
+  try {
+    const svc = serviceClient();
+    const ids = await listAllUserIds();
+    if (ids.length) {
+      const rows = ids.map((uid) => ({
+        user_id: uid,
+        sender_email: actor.email ?? null,
+        subject: title,
+        body,
+        url,
+        kind: "broadcast",
+      }));
+      for (let i = 0; i < rows.length; i += 500) {
+        const { error } = await svc
+          .from("admin_messages")
+          .insert(rows.slice(i, i + 500));
+        if (error) throw new Error(error.message);
+      }
+      inApp = rows.length;
+    }
+  } catch (e) {
+    console.error("[broadcastNotification] in-app persist failed:", e);
+  }
+
   const { broadcastToAllUsers } = await import("@/lib/admin-notify");
   const result = await broadcastToAllUsers({
     title,
@@ -136,7 +185,7 @@ export async function broadcastNotification(input: {
     tag: `broadcast-${Date.now()}`,
   });
 
-  return result;
+  return { ...result, in_app: inApp };
 }
 
 // Hard-delete an inactive account. Gated to non-active states only —

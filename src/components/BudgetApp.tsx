@@ -33,7 +33,9 @@ import {
 import CategoryPicker from "./CategoryPicker";
 import SortableWidgets from "./SortableWidgets";
 import { IncomeEditor } from "./IncomeWidget";
+import UpdateBanner from "./UpdateBanner";
 import type { IncomeEntry } from "@/app/actions/income";
+import type { AdminMessage } from "@/app/actions/messages";
 import type { SavingsGoal } from "@/lib/income";
 import type { WidgetLayout } from "@/lib/widgets";
 import {
@@ -71,6 +73,8 @@ type Props = {
   initialSavingsGoal?: SavingsGoal | null;
   // Count of unread admin → user messages. Drives the header inbox badge.
   unreadMessages?: number;
+  // Unread broadcast updates — shown as a dismissible dashboard banner.
+  broadcastUpdates?: AdminMessage[];
   // When false (or null in DB), the income widget is hidden from the
   // dashboard. Toggleable from Settings → Widgets.
   showIncomeWidget?: boolean;
@@ -108,6 +112,7 @@ export default function BudgetApp({
   initialIncomeEntries = [],
   initialSavingsGoal = null,
   unreadMessages = 0,
+  broadcastUpdates = [],
   showIncomeWidget = true,
   initialWidgetLayout,
   initialReceiptBatches = [],
@@ -340,6 +345,9 @@ export default function BudgetApp({
       </nav>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
+        {broadcastUpdates.length > 0 && (
+          <UpdateBanner updates={broadcastUpdates} />
+        )}
         {tab === "dashboard" && (
           <Dashboard
             year={year}
