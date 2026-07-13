@@ -4,7 +4,8 @@ import BudgetApp from "@/components/BudgetApp";
 import OnboardingFlow from "@/components/OnboardingFlow";
 import { listPeople } from "@/app/actions/people";
 import { getSavingsGoal, listIncome } from "@/app/actions/income";
-import { getUnreadMessageCount } from "@/app/actions/messages";
+import { listMyMessages } from "@/app/actions/messages";
+import AppOpenPrompts from "@/components/AppOpenPrompts";
 import { normalizeLayout } from "@/lib/widgets";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +27,7 @@ export default async function HomePage() {
     incomeRows,
     { data: receiptBatches = [] },
     savingsGoal,
-    unreadMessages,
+    myMessages,
   ] = await Promise.all([
     supabase
       .from("categories")
@@ -53,12 +54,13 @@ export default async function HomePage() {
       .select("id, merchant, total_extracted, scanned_at")
       .eq("user_id", user.id),
     getSavingsGoal(new Date().getFullYear()).catch(() => null),
-    getUnreadMessageCount().catch(() => 0),
+    listMyMessages().catch(() => []),
   ]);
 
   const needsOnboarding = !profileRow?.onboarded_at;
   const showIncomeWidget = profileRow?.show_income_widget ?? true;
   const widgetLayout = normalizeLayout(profileRow?.home_widgets);
+  const unreadList = myMessages.filter((m) => !m.read_at);
 
   return (
     <>
@@ -71,12 +73,16 @@ export default async function HomePage() {
         initialPeople={people}
         initialIncomeEntries={incomeRows}
         initialSavingsGoal={savingsGoal}
-        unreadMessages={unreadMessages}
+        unreadMessages={unreadList.length}
         showIncomeWidget={showIncomeWidget}
         initialWidgetLayout={widgetLayout}
         initialReceiptBatches={receiptBatches ?? []}
       />
-      {needsOnboarding && <OnboardingFlow userId={user.id} />}
+      {needsOnboarding ? (
+        <OnboardingFlow userId={user.id} />
+      ) : (
+        <AppOpenPrompts unreadMessages={unreadList} />
+      )}
     </>
   );
 }

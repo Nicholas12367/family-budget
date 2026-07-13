@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { markOnboarded } from "@/app/actions/onboarding";
+import { enablePush } from "@/lib/push-client";
 
 // Interactive guided tour. Each step highlights a real UI element via a
 // spotlight overlay (cut-out around the target). "Next" advances; "Show me"
@@ -49,6 +50,7 @@ type TourStep = {
   selector?: string; // element to spotlight
   showMe?: { event: string; detail?: unknown; label: string };
   preNav?: { event: string; detail?: unknown }; // fire before the spotlight renders to set app state
+  enableNotifications?: boolean; // render an "Allow notifications" button
 };
 
 const STEPS: TourStep[] = [
@@ -99,6 +101,11 @@ const STEPS: TourStep[] = [
     body: "Tap More at the bottom → Help & FAQ to search the docs, or Send feedback to ping the owner directly. You'll get a notification back when a bug is fixed.",
     selector: "[data-tour-id='bottom-more']",
   },
+  {
+    title: "Turn on notifications 🔔",
+    body: "Last thing — get a ping when you cross a budget, log a big purchase, or when we send an update, even when the app is closed. Works on Android and iPhone. Tap Allow.",
+    enableNotifications: true,
+  },
 ];
 
 export default function OnboardingFlow({ userId }: { userId: string }) {
@@ -112,6 +119,7 @@ export default function OnboardingFlow({ userId }: { userId: string }) {
     "ios" | "android" | "desktop" | "other"
   >("other");
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [notifMsg, setNotifMsg] = useState<string | null>(null);
 
   useEffect(() => {
     setPlatform(detectPlatform());
@@ -208,6 +216,23 @@ export default function OnboardingFlow({ userId }: { userId: string }) {
     }
   }
 
+  async function enableNotifs() {
+    setNotifMsg("Requesting…");
+    const r = await enablePush();
+    if (r.ok) setNotifMsg("✅ Notifications are on!");
+    else if (r.state === "needs-install-ios")
+      setNotifMsg(
+        "On iPhone, add the app to your Home Screen first (the install step above), then reopen it from the new icon and tap Allow."
+      );
+    else if (r.state === "denied")
+      setNotifMsg(
+        "Notifications are blocked — turn them on in your browser/site settings, then reopen."
+      );
+    else if (r.state === "unsupported")
+      setNotifMsg("This browser doesn't support notifications.");
+    else setNotifMsg(r.message || "Couldn't enable — try again.");
+  }
+
   if (stage === "done") return null;
 
   return (
@@ -256,6 +281,8 @@ export default function OnboardingFlow({ userId }: { userId: string }) {
               onPrev={prev}
               onSkip={finish}
               onShowMe={showMe}
+              onEnableNotifications={enableNotifs}
+              notifMsg={notifMsg}
             />
           )}
         </div>
@@ -423,6 +450,8 @@ function TourStepView({
   onPrev,
   onSkip,
   onShowMe,
+  onEnableNotifications,
+  notifMsg,
 }: {
   step: TourStep;
   index: number;
@@ -431,6 +460,8 @@ function TourStepView({
   onPrev: () => void;
   onSkip: () => void;
   onShowMe: () => void;
+  onEnableNotifications: () => void;
+  notifMsg: string | null;
 }) {
   const isLast = index === total - 1;
   return (
@@ -445,6 +476,20 @@ function TourStepView({
         </button>
       </div>
       <p className="text-sm text-gray-700">{step.body}</p>
+
+      {step.enableNotifications && (
+        <div className="space-y-1.5">
+          <button
+            onClick={onEnableNotifications}
+            className="w-full px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700"
+          >
+            🔔 Allow notifications
+          </button>
+          {notifMsg && (
+            <p className="text-center text-xs text-gray-600">{notifMsg}</p>
+          )}
+        </div>
+      )}
 
       {/* Slide pips */}
       <div className="flex justify-center gap-1.5 pt-1">
