@@ -568,8 +568,9 @@ export function IncomeEditor({
               </div>
               <p className="text-[11px] text-gray-500">
                 {goalPeriod === "monthly"
-                  ? "How much you aim to save each month (resets monthly). Leave blank to clear."
-                  : "How much you aim to save across the whole year. Leave blank to clear."}
+                  ? "A monthly target. Progress = what's left after spending this month (income − expenses − bills), updated live and reset on the 1st."
+                  : "A yearly target. Progress = your income minus all spending so far this year (expenses + bills), updated live. Log your income so it counts — scan a pay stub or tap Add income."}
+                {" Leave blank to clear."}
               </p>
               {goalMsg && <p className="text-[11px] text-emerald-700">{goalMsg}</p>}
             </div>
