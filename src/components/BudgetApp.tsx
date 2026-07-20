@@ -1748,6 +1748,8 @@ function ExpenseDialog({
     e?.category_id ?? categories[0]?.id ?? 0
   );
   const [personId, setPersonId] = useState<number | null>(e?.person_id ?? null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   return (
     <DialogShell onClose={onClose}>
@@ -1755,7 +1757,21 @@ function ExpenseDialog({
       <form
         onSubmit={async (ev) => {
           ev.preventDefault();
+          if (saving) return;
           const fd = new FormData(ev.currentTarget);
+
+          const amount = parseAmountInput(fd.get("amount"));
+          if (!Number.isFinite(amount) || amount <= 0) {
+            setError(
+              "Enter an amount greater than 0 — numbers only (e.g. 24.99)."
+            );
+            return;
+          }
+          if (!categoryId) {
+            setError("Pick a category.");
+            return;
+          }
+          fd.set("amount", String(amount));
           fd.set("category_id", String(categoryId));
           fd.set("person_id", personId == null ? "" : String(personId));
           const dateValue = String(fd.get("date") ?? "");
@@ -1767,18 +1783,26 @@ function ExpenseDialog({
             )
               return;
           }
-          await onSave(fd, e?.id);
-          onClose();
+          setSaving(true);
+          setError(null);
+          try {
+            await onSave(fd, e?.id);
+            onClose();
+          } catch (err) {
+            setError(errorText(err));
+          } finally {
+            setSaving(false);
+          }
         }}
         className="space-y-3"
       >
         <Field label="Amount">
           <input
             name="amount"
-            type="number"
-            step="0.01"
-            required
+            type="text"
+            inputMode="decimal"
             defaultValue={e?.amount ?? ""}
+            placeholder="e.g. 24.99"
             className="w-full border rounded-lg px-3 py-2 mt-1"
           />
         </Field>
@@ -1830,11 +1854,21 @@ function ExpenseDialog({
         </Field>
         <DialogFooter
           showDelete={!isNew}
+          saving={saving}
+          error={error}
           onDelete={async () => {
             if (!e) return;
             if (!confirm("Delete this expense?")) return;
-            await onDelete(e.id);
-            onClose();
+            setSaving(true);
+            setError(null);
+            try {
+              await onDelete(e.id);
+              onClose();
+            } catch (err) {
+              setError(errorText(err));
+            } finally {
+              setSaving(false);
+            }
           }}
           onCancel={onClose}
         />
@@ -1861,6 +1895,13 @@ function FixedDialog({
   const isNew = initial === "new";
   const f = isNew ? null : initial;
   const [personId, setPersonId] = useState<number | null>(f?.person_id ?? null);
+  const [categoryId, setCategoryId] = useState<number>(
+    f?.category_id ?? categories[0]?.id ?? 0
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const noCategories = categories.length === 0;
+
   return (
     <DialogShell onClose={onClose}>
       <h3 className="text-lg font-bold">
@@ -1869,11 +1910,50 @@ function FixedDialog({
       <form
         onSubmit={async (ev) => {
           ev.preventDefault();
+          if (saving) return;
           const fd = new FormData(ev.currentTarget);
+
+          // Validate here so problems surface with a clear message. Previously
+          // bad input threw inside the Server Action, the promise rejected
+          // unhandled, and Save just looked dead.
+          const name = String(fd.get("name") ?? "").trim();
+          if (!name) {
+            setError("Give this fixed cost a name.");
+            return;
+          }
+          const amount = parseAmountInput(fd.get("amount"));
+          if (!Number.isFinite(amount) || amount <= 0) {
+            setError(
+              "Enter an amount greater than 0 — numbers only (e.g. 1200 or 1,200)."
+            );
+            return;
+          }
+          if (!categoryId) {
+            setError(
+              noCategories
+                ? "You have no categories yet — add one under Categories first."
+                : "Pick a category."
+            );
+            return;
+          }
+
+          // Send clean, normalised values.
+          fd.set("name", name);
+          fd.set("amount", String(amount));
+          fd.set("category_id", String(categoryId));
           if (!fd.has("is_active")) fd.set("is_active", "");
           fd.set("person_id", personId == null ? "" : String(personId));
-          await onSave(fd, f?.id);
-          onClose();
+
+          setSaving(true);
+          setError(null);
+          try {
+            await onSave(fd, f?.id);
+            onClose();
+          } catch (err) {
+            setError(errorText(err));
+          } finally {
+            setSaving(false);
+          }
         }}
         className="space-y-3"
       >
@@ -1881,40 +1961,47 @@ function FixedDialog({
           <input
             name="name"
             type="text"
-            required
             defaultValue={f?.name ?? ""}
             placeholder="e.g. Mortgage"
             className="w-full border rounded-lg px-3 py-2 mt-1"
           />
         </Field>
         <Field label="Amount">
+          {/* Deliberately type=text + inputMode=decimal: a number input
+              silently blanks values like "1,200", which used to make Save
+              fail with no explanation. parseAmountInput handles the rest. */}
           <input
             name="amount"
-            type="number"
-            step="0.01"
-            required
+            type="text"
+            inputMode="decimal"
             defaultValue={f?.amount ?? ""}
+            placeholder="e.g. 1200"
             className="w-full border rounded-lg px-3 py-2 mt-1"
           />
         </Field>
         <Field label="Category">
-          <select
-            name="category_id"
-            required
-            defaultValue={f?.category_id ?? categories[0]?.id}
-            className="w-full border rounded-lg px-3 py-2 mt-1"
-          >
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+          {noCategories ? (
+            <p className="text-sm text-rose-700 mt-1">
+              You have no categories yet — add one under Categories first.
+            </p>
+          ) : (
+            <select
+              name="category_id"
+              value={categoryId}
+              onChange={(ev) => setCategoryId(Number(ev.target.value))}
+              className="w-full border rounded-lg px-3 py-2 mt-1"
+            >
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          )}
         </Field>
         <Field label="Frequency">
           <select
             name="frequency"
-            required
             defaultValue={f?.frequency ?? "monthly"}
             className="w-full border rounded-lg px-3 py-2 mt-1"
           >
@@ -1943,11 +2030,21 @@ function FixedDialog({
         </label>
         <DialogFooter
           showDelete={!isNew}
+          saving={saving}
+          error={error}
           onDelete={async () => {
             if (!f) return;
             if (!confirm("Delete this fixed cost?")) return;
-            await onDelete(f.id);
-            onClose();
+            setSaving(true);
+            setError(null);
+            try {
+              await onDelete(f.id);
+              onClose();
+            } catch (err) {
+              setError(errorText(err));
+            } finally {
+              setSaving(false);
+            }
           }}
           onCancel={onClose}
         />
@@ -1969,6 +2066,8 @@ function CategoryDialog({
 }) {
   const isNew = initial === "new";
   const c = isNew ? null : initial;
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   return (
     <DialogShell onClose={onClose}>
       <h3 className="text-lg font-bold">
@@ -1977,9 +2076,24 @@ function CategoryDialog({
       <form
         onSubmit={async (ev) => {
           ev.preventDefault();
+          if (saving) return;
           const fd = new FormData(ev.currentTarget);
-          await onSave(fd, c?.id);
-          onClose();
+          const name = String(fd.get("name") ?? "").trim();
+          if (!name) {
+            setError("Give this category a name.");
+            return;
+          }
+          fd.set("name", name);
+          setSaving(true);
+          setError(null);
+          try {
+            await onSave(fd, c?.id);
+            onClose();
+          } catch (err) {
+            setError(errorText(err));
+          } finally {
+            setSaving(false);
+          }
         }}
         className="space-y-3"
       >
@@ -1987,7 +2101,6 @@ function CategoryDialog({
           <input
             name="name"
             type="text"
-            required
             defaultValue={c?.name ?? ""}
             className="w-full border rounded-lg px-3 py-2 mt-1"
           />
@@ -2003,14 +2116,20 @@ function CategoryDialog({
         <input name="icon" type="hidden" defaultValue={c?.icon ?? "•"} />
         <DialogFooter
           showDelete={!isNew && !c?.is_default}
+          saving={saving}
+          error={error}
           onDelete={async () => {
             if (!c) return;
             if (!confirm("Delete this category?")) return;
+            setSaving(true);
+            setError(null);
             try {
               await onDelete(c.id);
               onClose();
             } catch (err) {
-              alert((err as Error).message);
+              setError(errorText(err));
+            } finally {
+              setSaving(false);
             }
           }}
           onCancel={onClose}
@@ -2056,44 +2175,87 @@ function Field({
   );
 }
 
+// Accepts what people actually type into a money field — "1,200", "$1,200",
+// " 1200 " — and returns a number. NaN when there's nothing usable, so the
+// caller can show a precise message instead of failing silently server-side.
+function parseAmountInput(raw: unknown): number {
+  const s = String(raw ?? "")
+    .trim()
+    .replace(/[^0-9.\-]/g, "");
+  if (!s || s === "-" || s === ".") return NaN;
+  return Number(s);
+}
+
+// Server Actions have their error messages masked in production builds, so a
+// raw throw reaches the client as useless noise. Turn anything unrecognisable
+// into a short, honest message the user can act on.
+function errorText(e: unknown): string {
+  const m = (e as { message?: string })?.message ?? "";
+  if (
+    !m ||
+    m.length > 200 ||
+    /server components render|an error occurred|digest/i.test(m)
+  ) {
+    return "Couldn't save. Check the fields above and try again.";
+  }
+  return m;
+}
+
 function DialogFooter({
   showDelete,
   onDelete,
   onCancel,
+  saving = false,
+  error = null,
 }: {
   showDelete: boolean;
   onDelete: () => void;
   onCancel: () => void;
+  saving?: boolean;
+  error?: string | null;
 }) {
   return (
-    <div className="flex justify-between pt-2">
-      {showDelete ? (
-        <button
-          type="button"
-          onClick={onDelete}
-          className="text-red-600 text-sm font-semibold"
+    <>
+      {error && (
+        <p
+          role="alert"
+          className="text-sm text-rose-700 bg-rose-50 ring-1 ring-rose-200 rounded-lg px-3 py-2"
         >
-          Delete
-        </button>
-      ) : (
-        <span />
+          {error}
+        </p>
       )}
-      <div className="ml-auto flex gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-3 py-2 rounded-lg bg-gray-100 text-sm"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold"
-        >
-          Save
-        </button>
+      <div className="flex justify-between pt-2">
+        {showDelete ? (
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={saving}
+            className="text-red-600 text-sm font-semibold disabled:opacity-50"
+          >
+            Delete
+          </button>
+        ) : (
+          <span />
+        )}
+        <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            className="px-3 py-2 rounded-lg bg-gray-100 text-sm disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold disabled:opacity-60"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -2978,6 +3140,10 @@ function BulkEditableExpenseList({
                 try {
                   await onBulkDelete(ids);
                   exitSelect();
+                } catch (err) {
+                  // Never fail silently — a dead-looking button is worse than
+                  // an error message.
+                  alert(errorText(err));
                 } finally {
                   setBusy(false);
                 }
