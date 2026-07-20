@@ -30,62 +30,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
-// Shared camera stream (module scope)
+// Camera stream lifetime
 //
-// Opening the camera used to call getUserMedia on every mount, and on some
-// browsers each fresh call can re-surface the permission prompt. Scanning three
-// receipts in a row meant three prompts. Instead we keep ONE MediaStream alive
-// at module scope and reuse it while its video track is still "live".
+// The camera runs ONLY while this component is on screen. The moment the user
+// captures a photo, picks from the gallery, or closes the view, every track is
+// stopped — so the phone's camera-in-use indicator (the green dot on iOS, the
+// status icon on Android) goes out immediately.
 //
-// The obvious risk is leaving the camera (and its hardware indicator) running
-// forever, so the stream is only kept for a short idle window after the last
-// component unmounts, and is dropped immediately when the page is hidden or
-// unloaded.
+// We deliberately do NOT keep the stream alive between opens: stopping tracks
+// does not revoke the permission grant. The browser remembers "allowed" for the
+// origin, so re-opening the camera doesn't re-prompt.
+//
+// The module-scope handle exists purely as a safety net so a backgrounded or
+// unloading page can't strand a live track.
 // ---------------------------------------------------------------------------
 
-const IDLE_RELEASE_MS = 60_000;
-
-let cachedStream: MediaStream | null = null;
-let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+let activeStream: MediaStream | null = null;
 let lifecycleBound = false;
 
-function streamIsLive(s: MediaStream | null): s is MediaStream {
-  if (!s) return false;
-  const tracks = s.getVideoTracks();
-  return tracks.length > 0 && tracks.some((t) => t.readyState === "live");
-}
-
-/** Stop and forget the shared camera stream right now. */
+/** Stop the camera immediately and drop the handle. */
 export function releaseCameraStream(): void {
-  if (idleReleaseTimer) {
-    clearTimeout(idleReleaseTimer);
-    idleReleaseTimer = null;
-  }
-  if (cachedStream) {
+  if (activeStream) {
     try {
-      for (const t of cachedStream.getTracks()) t.stop();
+      for (const t of activeStream.getTracks()) t.stop();
     } catch {
       // Track already ended; nothing to do.
     }
-    cachedStream = null;
+    activeStream = null;
   }
 }
 
-function cancelIdleRelease(): void {
-  if (idleReleaseTimer) {
-    clearTimeout(idleReleaseTimer);
-    idleReleaseTimer = null;
-  }
-}
-
-/** Keep the stream around for a bit, then let it go if nobody remounts. */
-function scheduleIdleRelease(): void {
-  cancelIdleRelease();
-  idleReleaseTimer = setTimeout(releaseCameraStream, IDLE_RELEASE_MS);
-}
-
-// Never let a cached stream survive a backgrounded or unloading page — that's
-// what would otherwise pin the camera indicator on.
+// Belt and braces: never let a live track survive a backgrounded or unloading
+// page — that's what would otherwise pin the camera indicator on.
 function bindLifecycleRelease(): void {
   if (lifecycleBound || typeof window === "undefined") return;
   lifecycleBound = true;
@@ -291,25 +267,24 @@ export default function CameraCapture({
   // Tiny offscreen canvas reused across ticks for the downscaled sample.
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Detach the preview but KEEP the shared stream warm for a short while, so
-  // capturing several receipts back-to-back never re-prompts for permission.
+  // Shut the camera down right now — tracks stopped, preview detached — so the
+  // phone's camera indicator goes out the instant scanning is done.
   const stop = useCallback(() => {
     const video = videoRef.current;
     if (video) {
       try {
         video.pause();
+        video.srcObject = null;
       } catch {
         // Ignore: element may already be detached.
       }
     }
     streamRef.current = null;
-    scheduleIdleRelease();
+    releaseCameraStream();
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    // We're mounting again inside the idle window — keep the stream.
-    cancelIdleRelease();
     bindLifecycleRelease();
 
     const attach = async (stream: MediaStream) => {
@@ -330,14 +305,9 @@ export default function CameraCapture({
         return;
       }
 
-      // Fast path: the stream from the last open is still live, so skip
-      // getUserMedia entirely (and with it any chance of a fresh prompt).
-      if (streamIsLive(cachedStream)) {
-        await attach(cachedStream);
-        return;
-      }
-      // A dead cached stream is worse than none.
-      if (cachedStream) releaseCameraStream();
+      // Anything still running from a previous open is stale — drop it before
+      // asking for a fresh stream.
+      releaseCameraStream();
 
       // If permission is already denied, getUserMedia is doomed — report it
       // now with a useful reason instead of throwing a pointless prompt.
@@ -360,13 +330,12 @@ export default function CameraCapture({
           audio: false,
         });
         if (cancelled) {
-          // Cache it anyway: the next open reuses it, and the idle timer will
-          // clean it up if that never happens.
-          cachedStream = stream;
-          scheduleIdleRelease();
+          // The view closed while we were waiting for the camera — don't leave
+          // the hardware running.
+          for (const t of stream.getTracks()) t.stop();
           return;
         }
-        cachedStream = stream;
+        activeStream = stream;
         await attach(stream);
       } catch (e) {
         const name = (e as { name?: string })?.name || "error";
