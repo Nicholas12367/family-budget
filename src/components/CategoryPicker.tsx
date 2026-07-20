@@ -25,6 +25,7 @@ export default function CategoryPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
 
   const selected = categories.find((c) => c.id === value);
@@ -62,6 +63,7 @@ export default function CategoryPicker({
     const name = query.trim();
     if (!name || busy) return;
     setBusy(true);
+    setErr(null);
     try {
       const color = randomColor(name);
       const fd = new FormData();
@@ -73,6 +75,15 @@ export default function CategoryPicker({
       onChange((created as Category).id);
       setQuery("");
       setOpen(false);
+    } catch (e) {
+      // Surface it — previously this failed silently and the "add category"
+      // row just looked dead.
+      const m = (e as { message?: string })?.message ?? "";
+      setErr(
+        m && m.length < 200
+          ? m
+          : "Couldn't create that category. Try a different name."
+      );
     } finally {
       setBusy(false);
     }
@@ -137,6 +148,14 @@ export default function CategoryPicker({
             >
               {busy ? "Adding…" : `+ Add “${query.trim()}”`}
             </button>
+          )}
+          {err && (
+            <p
+              role="alert"
+              className="px-3 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-100"
+            >
+              {err}
+            </p>
           )}
           {!filtered.length && !query && (
             <p className="p-3 text-xs text-gray-500">

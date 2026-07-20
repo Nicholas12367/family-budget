@@ -29,6 +29,86 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+// ---------------------------------------------------------------------------
+// Shared camera stream (module scope)
+//
+// Opening the camera used to call getUserMedia on every mount, and on some
+// browsers each fresh call can re-surface the permission prompt. Scanning three
+// receipts in a row meant three prompts. Instead we keep ONE MediaStream alive
+// at module scope and reuse it while its video track is still "live".
+//
+// The obvious risk is leaving the camera (and its hardware indicator) running
+// forever, so the stream is only kept for a short idle window after the last
+// component unmounts, and is dropped immediately when the page is hidden or
+// unloaded.
+// ---------------------------------------------------------------------------
+
+const IDLE_RELEASE_MS = 60_000;
+
+let cachedStream: MediaStream | null = null;
+let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+let lifecycleBound = false;
+
+function streamIsLive(s: MediaStream | null): s is MediaStream {
+  if (!s) return false;
+  const tracks = s.getVideoTracks();
+  return tracks.length > 0 && tracks.some((t) => t.readyState === "live");
+}
+
+/** Stop and forget the shared camera stream right now. */
+export function releaseCameraStream(): void {
+  if (idleReleaseTimer) {
+    clearTimeout(idleReleaseTimer);
+    idleReleaseTimer = null;
+  }
+  if (cachedStream) {
+    try {
+      for (const t of cachedStream.getTracks()) t.stop();
+    } catch {
+      // Track already ended; nothing to do.
+    }
+    cachedStream = null;
+  }
+}
+
+function cancelIdleRelease(): void {
+  if (idleReleaseTimer) {
+    clearTimeout(idleReleaseTimer);
+    idleReleaseTimer = null;
+  }
+}
+
+/** Keep the stream around for a bit, then let it go if nobody remounts. */
+function scheduleIdleRelease(): void {
+  cancelIdleRelease();
+  idleReleaseTimer = setTimeout(releaseCameraStream, IDLE_RELEASE_MS);
+}
+
+// Never let a cached stream survive a backgrounded or unloading page — that's
+// what would otherwise pin the camera indicator on.
+function bindLifecycleRelease(): void {
+  if (lifecycleBound || typeof window === "undefined") return;
+  lifecycleBound = true;
+  window.addEventListener("pagehide", releaseCameraStream);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") releaseCameraStream();
+  });
+}
+
+// Returns "denied" | "granted" | "prompt" | null (unknown / unsupported).
+async function readCameraPermission(): Promise<string | null> {
+  try {
+    const perms = navigator.permissions;
+    if (!perms?.query) return null;
+    const status = await perms.query({ name: "camera" as PermissionName });
+    return status?.state ?? null;
+  } catch {
+    // Permissions API missing, or "camera" not a known descriptor (Firefox,
+    // older Safari). Not knowing is fine — we just try getUserMedia.
+    return null;
+  }
+}
+
 // Detected receipt box in NORMALIZED [0..1] coordinates relative to the
 // visible (object-fit: cover) video area. Null until/unless we have a
 // confident detection; the overlay and capture both fall back to a default
@@ -211,16 +291,35 @@ export default function CameraCapture({
   // Tiny offscreen canvas reused across ticks for the downscaled sample.
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Detach the preview but KEEP the shared stream warm for a short while, so
+  // capturing several receipts back-to-back never re-prompts for permission.
   const stop = useCallback(() => {
-    const s = streamRef.current;
-    if (s) {
-      for (const t of s.getTracks()) t.stop();
-      streamRef.current = null;
+    const video = videoRef.current;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        // Ignore: element may already be detached.
+      }
     }
+    streamRef.current = null;
+    scheduleIdleRelease();
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    // We're mounting again inside the idle window — keep the stream.
+    cancelIdleRelease();
+    bindLifecycleRelease();
+
+    const attach = async (stream: MediaStream) => {
+      streamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) return;
+      if (video.srcObject !== stream) video.srcObject = stream;
+      await video.play().catch(() => {});
+      setReady(true);
+    };
 
     async function start() {
       if (
@@ -230,6 +329,25 @@ export default function CameraCapture({
         onUnavailable("no_getusermedia");
         return;
       }
+
+      // Fast path: the stream from the last open is still live, so skip
+      // getUserMedia entirely (and with it any chance of a fresh prompt).
+      if (streamIsLive(cachedStream)) {
+        await attach(cachedStream);
+        return;
+      }
+      // A dead cached stream is worse than none.
+      if (cachedStream) releaseCameraStream();
+
+      // If permission is already denied, getUserMedia is doomed — report it
+      // now with a useful reason instead of throwing a pointless prompt.
+      const permission = await readCameraPermission();
+      if (cancelled) return;
+      if (permission === "denied") {
+        onUnavailable("denied");
+        return;
+      }
+
       try {
         // Prefer the rear camera at a high resolution so small receipt text
         // survives the crop.
@@ -242,16 +360,14 @@ export default function CameraCapture({
           audio: false,
         });
         if (cancelled) {
-          for (const t of stream.getTracks()) t.stop();
+          // Cache it anyway: the next open reuses it, and the idle timer will
+          // clean it up if that never happens.
+          cachedStream = stream;
+          scheduleIdleRelease();
           return;
         }
-        streamRef.current = stream;
-        const video = videoRef.current;
-        if (video) {
-          video.srcObject = stream;
-          await video.play().catch(() => {});
-          setReady(true);
-        }
+        cachedStream = stream;
+        await attach(stream);
       } catch (e) {
         const name = (e as { name?: string })?.name || "error";
         onUnavailable(name);
@@ -275,10 +391,39 @@ export default function CameraCapture({
     let stopped = false;
     let timer: ReturnType<typeof setInterval> | null = null;
 
-    // Exponential smoothing state, in normalized coords.
+    // How many consecutive ticks the box has barely moved. Two calm ticks in a
+    // row is what promotes the outline from "searching" to a confident lock.
+    let stable = 0;
+    // Consecutive ticks with no detection. We tolerate a couple before
+    // dropping back to the default frame, so one bad frame (a hand passing
+    // over, a blink of glare) doesn't make the outline pop away and back.
+    let misses = 0;
+    const MAX_MISSES = 3;
+
+    // Ignore sub-pixel-ish wobble: if every edge moved less than this in
+    // normalized units, treat the box as stationary and don't update at all.
+    // Without it the outline twitches continuously on a receipt lying still.
+    const JITTER = 0.004;
+    const isStill = (a: NormBox, b: NormBox) =>
+      Math.abs(a.x - b.x) < JITTER &&
+      Math.abs(a.y - b.y) < JITTER &&
+      Math.abs(a.w - b.w) < JITTER &&
+      Math.abs(a.h - b.h) < JITTER;
+
+    // Exponential smoothing (lerp toward the detection) in normalized coords.
+    // Gentler than before so the outline glides; the CSS transition on the
+    // frame carries it the rest of the way between ticks.
     const smooth = (prev: NormBox | null, next: NormBox): NormBox => {
       if (!prev) return next;
-      const a = 0.35; // how fast the outline chases the detection
+      // Chase harder when the box is far away (user re-aimed) and softly when
+      // it's already close, which reads as "settling onto" the receipt.
+      const drift = Math.max(
+        Math.abs(next.x - prev.x),
+        Math.abs(next.y - prev.y),
+        Math.abs(next.w - prev.w),
+        Math.abs(next.h - prev.h)
+      );
+      const a = drift > 0.12 ? 0.45 : 0.18;
       return {
         x: prev.x + (next.x - prev.x) * a,
         y: prev.y + (next.y - prev.y) * a,
@@ -330,19 +475,30 @@ export default function CameraCapture({
 
         const found = detectReceiptBox(img.data, cw, ch);
         if (found) {
-          const next = smooth(boxRef.current, found);
-          boxRef.current = next;
-          setBox(next);
-          setLocked(true);
+          misses = 0;
+          const prev = boxRef.current;
+          const next = smooth(prev, found);
+          if (prev && isStill(prev, next)) {
+            // Held steady: don't touch the box (no re-render, no twitch), just
+            // build confidence toward the locked visual state.
+            stable = Math.min(stable + 1, 8);
+          } else {
+            stable = prev ? 0 : 1;
+            boxRef.current = next;
+            setBox(next);
+          }
+          setLocked(stable >= 2);
         } else {
-          // No confident detection this tick: relax back toward null so the
-          // overlay returns to the default frame rather than sticking on a
-          // stale box.
-          if (boxRef.current) {
+          // No confident detection this tick. Only give up after a few misses
+          // in a row, then relax back to the default frame rather than
+          // sticking on a stale box.
+          misses++;
+          stable = 0;
+          setLocked(false);
+          if (misses >= MAX_MISSES && boxRef.current) {
             boxRef.current = null;
             setBox(null);
           }
-          setLocked(false);
         }
       } catch {
         // Detection is best-effort. On any failure, stop the loop and keep the
@@ -479,7 +635,9 @@ export default function CameraCapture({
       <div className="absolute inset-0 pointer-events-none">
         <div
           ref={frameRef}
-          className="absolute transition-all duration-150 ease-out"
+          // Animating the geometry (not just colors) is what makes the outline
+          // glide between detection ticks instead of snapping 5x a second.
+          className="absolute transition-[left,top,width,height] duration-150 ease-out"
           style={{
             left: `${(box ?? DEFAULT_BOX).x * 100}%`,
             top: `${(box ?? DEFAULT_BOX).y * 100}%`,
@@ -487,22 +645,49 @@ export default function CameraCapture({
             height: `${(box ?? DEFAULT_BOX).h * 100}%`,
           }}
         >
-          {/* Outline — brightens once we've locked onto a receipt. */}
+          {/* Outline + dim mask. Thin and muted while hunting; bright, thicker
+              and slightly glowing once the box has held steady. The enormous
+              box-shadow is the mask that dims everything outside the frame. */}
           <div
-            className={`absolute inset-0 rounded-2xl ring-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] transition-colors ${
-              locked ? "ring-emerald-400" : "ring-emerald-400/70"
+            className={`absolute inset-0 rounded-2xl transition-all duration-150 ease-out ${
+              locked
+                ? "ring-[3px] ring-emerald-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
+                : "ring-1 ring-emerald-300/50 shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]"
             }`}
           />
-          {/* Corner ticks for a scanner feel */}
+          {/* Corner brackets — they grow and brighten on lock, which reads as
+              "got it" at a glance without any extra chrome. */}
           {[
-            "top-0 left-0 border-t-4 border-l-4 rounded-tl-2xl",
-            "top-0 right-0 border-t-4 border-r-4 rounded-tr-2xl",
-            "bottom-0 left-0 border-b-4 border-l-4 rounded-bl-2xl",
-            "bottom-0 right-0 border-b-4 border-r-4 rounded-br-2xl",
+            {
+              pos: "top-0 left-0 rounded-tl-2xl",
+              thin: "border-t-2 border-l-2",
+              thick: "border-t-4 border-l-4",
+            },
+            {
+              pos: "top-0 right-0 rounded-tr-2xl",
+              thin: "border-t-2 border-r-2",
+              thick: "border-t-4 border-r-4",
+            },
+            {
+              pos: "bottom-0 left-0 rounded-bl-2xl",
+              thin: "border-b-2 border-l-2",
+              thick: "border-b-4 border-l-4",
+            },
+            {
+              pos: "bottom-0 right-0 rounded-br-2xl",
+              thin: "border-b-2 border-r-2",
+              thick: "border-b-4 border-r-4",
+            },
           ].map((c) => (
             <span
-              key={c}
-              className={`absolute w-7 h-7 border-emerald-300 ${c}`}
+              key={c.pos}
+              className={`absolute border-emerald-300 transition-all duration-150 ease-out ${
+                c.pos
+              } ${
+                locked
+                  ? `${c.thick} w-9 h-9 opacity-100`
+                  : `${c.thin} w-6 h-6 opacity-50`
+              }`}
             />
           ))}
         </div>
@@ -539,8 +724,16 @@ export default function CameraCapture({
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
-        <span className="text-white/90 text-sm font-medium bg-black/35 px-3 py-1.5 rounded-full backdrop-blur">
-          {locked ? "Receipt detected — tap to capture" : "Point at the receipt — we'll size to it"}
+        <span
+          className={`text-sm font-medium px-3 py-1.5 rounded-full backdrop-blur transition-colors duration-150 ${
+            locked
+              ? "text-emerald-100 bg-emerald-900/45"
+              : "text-white/90 bg-black/35"
+          }`}
+        >
+          {locked
+            ? "Receipt locked — tap to capture"
+            : "Point at the receipt — we'll size to it"}
         </span>
         <span className="w-10" />
       </div>
