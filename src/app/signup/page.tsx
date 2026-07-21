@@ -24,8 +24,23 @@ async function SignupForm({
     const supabase = await createClient();
     const h = await headers();
     const origin = h.get("origin") ?? "";
-    const email = String(formData.get("email") ?? "");
+    const email = String(formData.get("email") ?? "").trim();
     const password = String(formData.get("password") ?? "");
+
+    // HTML minLength on the input is client-side only — an attacker can POST
+    // the form directly with an empty or 1-char password. Enforce the same
+    // minimum on the server so Supabase never sees a weak password. Match
+    // the length used by the /reset flow so the two stay in sync.
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      redirect(
+        `/signup?error=${encodeURIComponent("Please enter a valid email address")}`
+      );
+    }
+    if (password.length < 8) {
+      redirect(
+        `/signup?error=${encodeURIComponent("Password must be at least 8 characters")}`
+      );
+    }
 
     const { data, error } = await supabase.auth.signUp({
       email,
